@@ -106,6 +106,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await shot('06-rsvp');
   const p1 = await sp(() => __stillpoint.R.pos);
   const spread = Math.max(...xs) - Math.min(...xs);
+  const mid = xs[0];
+  ok('highlighted letter is centered on screen', Math.abs(mid - 393 / 2) < 1, `${mid.toFixed(1)} of 393`);
   ok('highlighted letter stays in one spot', spread < 1, `moved ${spread.toFixed(2)}px over ${xs.length} samples, ${seen.size} words`);
   const rate = (p1 - p0) / 6 * 60;
   ok('speed moves words steadily', rate > 100 && rate < 300, `${Math.round(rate)} words per minute in the first 6 seconds at 300 WPM`);
@@ -213,26 +215,46 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   ok('dragging a sheet down dismisses it', await sp(() => !document.querySelector('.scrim')));
 
   // Settings
-  await page.tap('#r-settings'); await page.waitForSelector('#set-body');
+  const setPage = async name => { await page.tap(`[data-page="${name}"]`); await sleep(320); };
+  const setBack = async () => { await page.tap('#set-back'); await sleep(320); };
+  await page.tap('#r-settings'); await page.waitForSelector('.set-nav'); await sleep(450);
   await shot('10-settings');
-  const applied = await sp(() => {
-    const out = {};
-    const set = (id, v) => { const el = document.querySelector(id); el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); };
-    set('#s-wordSize', 70); out.size = getComputedStyle(document.documentElement).getPropertyValue('--word-size');
-    set('#s-pivotMode', 'middle'); out.mode = __stillpoint.S.pivotMode;
-    document.querySelector('[data-theme-pick=paper]').click();
-    return out;
-  });
-  await sleep(450);
+  ok('settings opens to a short list of sections', (await page.$$('.set-nav')).length === 9, (await page.$$('.set-nav')).length);
+  ok('main settings page has no back button', await sp(() => getComputedStyle(document.querySelector('#set-back')).display === 'none'));
+  ok('settings list has no floating preview', !(await page.$('.preview')));
+  const setInput = (id, v) => sp2(id, v);
+  const sp2 = (id, v) => page.evaluate(([i, val]) => { const el = document.querySelector(i); el.value = val; el.dispatchEvent(new Event('input', { bubbles: true })); }, [id, v]);
+  await setPage('RSVP word');
+  await shot('11-settings-word');
+  ok('section page shows a preview', !!(await page.$('.preview .pv-rail')));
+  const noOverlap = await sp(() => { const p = document.querySelector('.preview').getBoundingClientRect(); const b = document.querySelector('#set-body').getBoundingClientRect(); return b.top >= p.bottom; });
+  ok('preview stays above the scrolling list', noOverlap);
+  await setInput('#s-wordSize', 70);
+  await setInput('#s-pivotMode', 'middle');
+  const applied = await sp(() => ({ size: getComputedStyle(document.documentElement).getPropertyValue('--word-size'), mode: __stillpoint.S.pivotMode }));
+  await setInput('#s-wordSize', 48);
+  await setInput('#s-pivotMode', 'orp');
+  await setBack();
+  ok('back returns to the section list', (await page.$$('.set-nav')).length === 9);
+  ok('section summary reflects choices', /48 pt/.test(await page.textContent('[data-page="RSVP word"]')));
+  await setPage('Colors');
+  await page.tap('[data-theme-pick=paper]'); await sleep(450);
   applied.bg = await sp(() => getComputedStyle(document.body).backgroundColor);
   ok('settings apply live', applied.size === '70px' && applied.mode === 'middle' && applied.bg === 'rgb(247, 248, 245)', JSON.stringify(applied));
-  await shot('11-settings-paper');
-  await sp(() => { document.querySelector('[data-theme-pick=oled]').click(); const el = document.querySelector('#s-pivotMode'); el.value = 'orp'; el.dispatchEvent(new Event('input', { bubbles: true })); const s = document.querySelector('#s-wordSize'); s.value = 48; s.dispatchEvent(new Event('input', { bubbles: true })); });
+  ok('custom color rows stay hidden until chosen', await sp(() => document.querySelector('.custom-rows').hidden));
+  await page.tap('[data-theme-pick=custom]'); await sleep(450);
+  await shot('12-settings-colors');
   await page.fill('[data-hex=customHi]', '#00ff88');
   ok('hex colors apply', await sp(() => __stillpoint.S.theme === 'custom' && __stillpoint.S.customHi === '#00ff88'));
-  await sp(() => document.querySelector('[data-theme-pick=tide]').click());
+  await page.tap('[data-theme-pick=tide]'); await sleep(450);
+  await setBack();
+  for (const [name, id] of [['Scrolling text', '#s-textFont'], ['Speed', '#s-wpm'], ['Pacing', '#s-commaPause'], ['Ambient sound', '#s-sound'], ['Reading goal', '#s-dailyGoal'], ['Controls', '#s-holdMode'], ['Library and data', '[data-a=backup]']]) {
+    await setPage(name);
+    ok(`${name} page opens`, !!(await page.$(id)));
+    await setBack();
+  }
   await page.click('[data-close]');
-  await sleep(300);
+  await sleep(450);
 
   // Sustained speed, without the ramp
   const speed = await page.evaluate(async () => {
@@ -322,7 +344,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await page.waitForSelector('.book-row');
 
   // Backup roundtrip
-  await page.tap('#go-settings'); await page.waitForSelector('#set-body');
+  await page.tap('#go-settings'); await page.waitForSelector('.set-nav'); await sleep(400);
+  await page.tap('[data-page="Library and data"]'); await page.waitForSelector('[data-a=backup]'); await sleep(320);
   const before = await page.evaluate(async () => { const r = indexedDB.open('stillpoint'); return await new Promise(res => { r.onsuccess = () => { const q = r.result.transaction('books').objectStore('books').count(); q.onsuccess = () => res(q.result); }; }); });
   const [download] = await Promise.all([page.waitForEvent('download'), page.click('[data-a=backup]')]);
   const backupPath = path.join(process.env.SHOTS || S, 'backup.zip');
@@ -383,7 +406,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(200);
   await shot('13-landscape');
 
-  ok('edge bars are solid', await sp(() => { const c = getComputedStyle(document.querySelector('.edge-top')); return c.position === 'fixed' && !/rgba|transparent/.test(c.backgroundColor) && c.height === '6px'; }));
+  ok('edge strips can be found by iOS', await sp(() => { document.documentElement.style.setProperty('--safe-t', '59px'); const out = [4, 63].every(y => document.elementFromPoint(innerWidth / 2, y)?.classList.contains('edge-top')); const r = document.querySelector('.edge-top').getBoundingClientRect(); const c = getComputedStyle(document.querySelector('.edge-top')); document.documentElement.style.removeProperty('--safe-t'); return out && r.height > 10 && r.width >= innerWidth * .9 && c.position === 'fixed' && !/rgba|transparent/.test(c.backgroundColor) && c.pointerEvents !== 'none'; }));
+  ok('bar buttons are not covered by the edge strips', await sp(() => { const r = document.querySelector('#r-back').getBoundingClientRect(); const a = document.elementFromPoint(r.x + 22, r.y + 3); const p = document.querySelector('#play').getBoundingClientRect(); const b = document.elementFromPoint(p.x + 30, p.bottom - 3); return !!a.closest('#r-back') && !!b.closest('#play'); }));
   ok('reader bars are opaque', await sp(() => { const c = getComputedStyle(document.querySelector('#top-bar')); return !/rgba|transparent/.test(c.backgroundColor) && (c.backdropFilter === 'none' || !c.backdropFilter); }));
   ok('no app errors during the run', errors.length === 0, errors.slice(0, 5).join(' | '));
   await browser.close();

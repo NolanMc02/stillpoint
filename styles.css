@@ -38,10 +38,10 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 
 /* Library */
 .screen { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
-.screen-head { display: flex; align-items: center; gap: 4px; padding: calc(var(--safe-t) + 8px) calc(var(--safe-r) + 10px) 4px calc(var(--safe-l) + 22px); }
+.screen-head { display: flex; align-items: center; gap: 4px; padding: calc(var(--safe-t) + 14px) calc(var(--safe-r) + 10px) 4px calc(var(--safe-l) + 22px); }
 .wordmark { flex: 1; font: 500 30px/1.1 var(--serif); margin: 0; white-space: nowrap; }
 .wordmark .p { color: var(--hi); }
-.screen-body { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px calc(var(--safe-r) + 22px) calc(var(--safe-b) + 32px) calc(var(--safe-l) + 22px); }
+.screen-body { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px calc(var(--safe-r) + 22px) calc(var(--safe-b) + 44px) calc(var(--safe-l) + 22px); }
 .lib-tools { display: flex; gap: 10px; margin-bottom: 10px; }
 .lib-tools input, .lib-tools select { background: var(--panel); border: 0; border-radius: 12px; height: 42px; padding: 0 13px; min-width: 0; font-size: 16px; }
 .lib-tools input { flex: 1; }
@@ -65,7 +65,7 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 #reader { position: absolute; inset: 0; background: var(--bg); overflow: hidden; touch-action: pan-y; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 #reader.playing { touch-action: none; }
 #flow { position: absolute; inset: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overflow-anchor: none; touch-action: pan-y;
-  padding: calc(var(--safe-t) + 74px) calc(var(--safe-r) + var(--text-margin)) calc(var(--safe-b) + 186px) calc(var(--safe-l) + var(--text-margin));
+  padding: calc(var(--safe-t) + 82px) calc(var(--safe-r) + var(--text-margin)) calc(var(--safe-b) + 186px) calc(var(--safe-l) + var(--text-margin));
   font-family: var(--text-font); font-size: var(--text-size); line-height: var(--text-lead); text-align: var(--text-align); transition: opacity .28s ease; }
 #flow-inner { max-width: 38em; margin: 0 auto; }
 #flow p, #flow blockquote { margin: 0 0 .85em; }
@@ -102,12 +102,12 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 #fly { position: absolute; z-index: 5; pointer-events: none; white-space: pre; transform-origin: 0 0; color: var(--hi); }
 
 .bar { position: absolute; left: 0; right: 0; z-index: 4; background: var(--bg); transition: opacity .25s ease, transform .25s ease; }
-#top-bar { top: 0; padding: calc(var(--safe-t) + 4px) calc(var(--safe-r) + 8px) 4px calc(var(--safe-l) + 8px); display: flex; align-items: center; gap: 2px; }
+#top-bar { top: 0; padding: calc(var(--safe-t) + 12px) calc(var(--safe-r) + 8px) 4px calc(var(--safe-l) + 8px); display: flex; align-items: center; gap: 2px; }
 #chapter-btn { flex: 1; min-width: 0; height: 44px; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0 6px; border-radius: 12px; }
 #chapter-btn:active { background: var(--faint); }
 #chapter-btn b { font-weight: 600; font-size: 15px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #chapter-btn small { color: var(--dim); font-size: 12.5px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#bottom-bar { bottom: 0; padding: 8px calc(var(--safe-r) + 16px) calc(var(--safe-b) + 8px) calc(var(--safe-l) + 16px); touch-action: none; }
+#bottom-bar { bottom: 0; padding: 8px calc(var(--safe-r) + 16px) calc(var(--safe-b) + 12px) calc(var(--safe-l) + 16px); touch-action: none; }
 .playing .bar, .starting .bar { opacity: 0; pointer-events: none; }
 .playing #top-bar, .starting #top-bar { transform: translateY(-16px); }
 .playing #bottom-bar, .starting #bottom-bar { transform: translateY(16px); }
@@ -174,14 +174,27 @@ textarea.field-text { min-height: 180px; resize: vertical; font-family: var(--se
 .hit mark { background: color-mix(in srgb, var(--hi) 32%, transparent); color: inherit; border-radius: 2px; }
 
 /* Settings */
-.preview { position: sticky; top: 0; z-index: 2; height: 118px; margin: 0 -22px 6px; background: var(--bg); border-bottom: 1px solid var(--faint); overflow: hidden; }
-.preview .pv-rail { position: absolute; left: 0; right: 0; top: 50%; height: 0; font-family: var(--word-font); font-size: min(var(--word-size), 58px); font-weight: var(--word-weight); white-space: pre; }
+.preview { position: relative; height: 104px; margin: 2px 22px 10px; background: var(--panel); border-radius: 16px; overflow: hidden; }
+.preview .pv-rail { position: absolute; left: 0; right: 0; top: 50%; height: 0; font-family: var(--word-font); font-size: min(var(--word-size), 54px); font-weight: var(--word-weight); white-space: pre; }
 .preview .pv-rail span { position: absolute; top: 0; transform: translateY(-50%); line-height: 1.25; }
 .preview .pv-p { color: var(--hi); }
+.pv-tick { position: absolute; top: 8px; bottom: 8px; width: 2px; background: linear-gradient(var(--hi) 0 12px, transparent 12px calc(100% - 12px), var(--hi) calc(100% - 12px)); opacity: .7; }
+[data-guides=off] .pv-tick { display: none; }
 [data-pivot=bold] .pv-p { font-weight: 800; }
 [data-pivot=underline] .pv-p { text-decoration: underline; text-decoration-thickness: .07em; text-underline-offset: .12em; }
 [data-pivot=plain] .pv-p { color: inherit; }
+.preview.text { height: auto; padding: 14px 16px; }
+.preview.text p { margin: 0; font-family: var(--text-font); font-size: min(var(--text-size), 24px); line-height: var(--text-lead); text-align: var(--text-align); }
+.set-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; text-align: left; padding: 14px 0; border-bottom: 1px solid var(--faint); }
+.set-nav:last-child { border-bottom: 0; }
+.set-nav:active { transform: none; opacity: .55; }
+.set-nav b { display: block; font-weight: 500; font-size: 17px; }
+.set-nav small { display: block; color: var(--dim); font-size: 14px; margin-top: 1px; }
+.set-nav svg { transform: scaleX(-1); color: var(--dim); width: 20px; height: 20px; flex: none; }
+.set-back { margin-left: -14px; }
+.sheet-head.sub { padding-left: 22px; }
 .set-group { margin: 24px 0 2px; font: 500 21px/1.2 var(--serif); }
+.custom-rows[hidden] { display: none; }
 .set-row { padding: 12px 0; border-bottom: 1px solid var(--faint); }
 .set-line { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .set-line label, .set-label { flex: 1; min-width: 0; }
@@ -259,9 +272,11 @@ textarea.field-text { min-height: 180px; resize: vertical; font-family: var(--se
 
 /* iOS 26 home screen fixes.
    A solid full-width box at each edge stops the system's scroll-edge blur. */
-.edge { position: fixed; left: 0; right: 0; background: var(--bg); z-index: 15; pointer-events: none; }
-.edge-top { top: 0; height: max(var(--safe-t), 6px); }
-.edge-bottom { bottom: 0; height: max(var(--safe-b), 6px); }
+/* iOS finds these by hit testing about 4px inside the edge, so they must accept pointer events,
+   be taller than 10px, and reach past the safe area. */
+.edge { position: fixed; left: 0; right: 0; background: var(--bg); z-index: 15; }
+.edge-top { top: 0; height: calc(var(--safe-t) + 12px); }
+.edge-bottom { bottom: 0; height: calc(var(--safe-b) + 12px); }
 /* WebKit bug 301108: the viewport stops short by the status bar height unless the page is taller. */
 @media (display-mode: standalone) {
   html { min-height: min(100lvh, calc(100% + env(safe-area-inset-top, 0px))); }
@@ -316,3 +331,4 @@ label.menu-btn:active { opacity: .55; }
 }
 
 ::view-transition { pointer-events: none; }
+.set-back[hidden] { display: none; }

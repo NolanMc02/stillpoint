@@ -62,7 +62,7 @@ const fontOptions = Object.entries(FONTS).map(([k, v]) => [k, v[0]]);
 
 const DEFAULTS = {
   theme: 'tide', customBg: '#102A2A', customInk: '#E6EFE8', customHi: '#FF9F5A',
-  wordFont: 'newyork', wordSize: 48, wordWeight: 500, wordY: 42, pivotX: 40, pivotMode: 'orp', pivotStyle: 'color',
+  wordFont: 'newyork', wordSize: 48, wordWeight: 500, wordY: 42, pivotX: 50, pivotMode: 'orp', pivotStyle: 'color',
   guides: true, wordsPerFlash: 1, liveProgress: true, liveText: false, chapterCall: true,
   textFont: 'iowan', textSize: 19, textLead: 1.6, textMargin: 22, textAlign: 'left',
   wpm: 300, wpmStep: 25, wpmMin: 50, wpmMax: 1500, perBookWpm: true, countdown: 3, ramp: 5, rewind: 10, resumeBack: 0,
@@ -88,7 +88,7 @@ const SETTINGS = [
     { k: 'pivotMode', label: 'Highlighted letter', help: 'Best spot sits slightly left of center, where word recognition tends to be fastest.', type: 'select', options: [['orp', 'Best spot'], ['middle', 'True middle']] },
     { k: 'pivotStyle', label: 'Highlight style', type: 'select', options: [['color', 'Color'], ['bold', 'Color and bold'], ['underline', 'Color and underline'], ['plain', 'None']] },
     { k: 'guides', label: 'Focus marks', help: 'Two small marks above and below the highlighted letter.', type: 'toggle' },
-    { k: 'pivotX', label: 'Horizontal position', type: 'range', min: 25, max: 55, step: 1, unit: '%' },
+    { k: 'pivotX', label: 'Horizontal position', help: '50% puts the highlighted letter in the center of the screen.', type: 'range', min: 25, max: 65, step: 1, unit: '%' },
     { k: 'wordY', label: 'Vertical position', type: 'range', min: 20, max: 70, step: 1, unit: '%' },
     { k: 'wordsPerFlash', label: 'Words per flash', type: 'range', min: 1, max: 5, step: 1 },
     { k: 'liveProgress', label: 'Progress line while reading', type: 'toggle' },
@@ -1334,7 +1334,7 @@ function showSettings() {
       const row = (k, label) => `<div class="set-row"><div class="set-line"><span class="set-label">${label}</span><span class="color-line">
         <input type="color" data-color="${k}" value="${S[k]}" aria-label="${label} color picker">
         <input type="text" data-hex="${k}" value="${S[k]}" maxlength="7" autocapitalize="none" autocorrect="off" spellcheck="false" aria-label="${label} hex code"></span></div></div>`;
-      return row('customBg', 'Custom background') + row('customInk', 'Custom text') + row('customHi', 'Custom highlight');
+      return `<div class="custom-rows" ${S.theme === 'custom' ? '' : 'hidden'}>${row('customBg', 'Custom background')}${row('customInk', 'Custom text')}${row('customHi', 'Custom highlight')}</div>`;
     }
     const help = c.help ? `<small class="set-help">${esc(c.help)}</small>` : '';
     if (c.type === 'toggle') {
@@ -1349,20 +1349,39 @@ function showSettings() {
       <input id="s-${c.k}" type="range" data-k="${c.k}" data-num min="${c.min}" max="${c.max}" step="${c.step}" value="${S[c.k]}"></div>`;
   };
   const all = SETTINGS.flatMap(([, list]) => list);
-  const sheet = openSheet('Settings', `<div class="sheet-body" id="set-body">
-    <div class="preview" aria-hidden="true"><div class="pv-rail"><span class="pv-l"></span><span class="pv-p"></span><span class="pv-r"></span></div></div>
-    ${SETTINGS.map(([name, list]) => `<h3 class="set-group">${name}</h3>${list.map(control).join('')}`).join('')}
-    <h3 class="set-group">Library and data</h3>
+  const fontName = k => FONTS[k]?.[0] || '';
+  const SUMMARY = {
+    Colors: () => `${THEMES[S.theme]?.name || 'Custom'} theme`,
+    'RSVP word': () => `${fontName(S.wordFont)}, ${S.wordSize} pt`,
+    'Scrolling text': () => `${fontName(S.textFont)}, ${S.textSize} pt`,
+    Speed: () => `${S.countdown} s countdown, ${S.wpm} WPM for new books`,
+    Pacing: () => (S.smartPacing ? 'Natural pauses on' : 'Natural pauses off'),
+    'Ambient sound': () => SOUND_OPTIONS.find(([k]) => k === S.sound)?.[1] || 'Off',
+    'Reading goal': () => `${S.dailyGoal} min a day`,
+    Controls: () => (S.holdMode ? 'Hold to read' : 'Tap to play, swipe for speed'),
+    'Library and data': () => 'Backup, restore, and storage',
+  };
+  const PREVIEW = { Colors: 'word', 'RSVP word': 'word', 'Scrolling text': 'text' };
+  const dataPage = () => `
     <button class="menu-btn" data-a="backup">Save a backup<small>Includes your books, progress, bookmarks, stats, and settings</small></button>
     <label class="menu-btn" for="restore" style="cursor:pointer">Restore from a backup<small>Adds its books and replaces your settings</small></label>
     <input id="restore" type="file" accept=".zip,application/zip" style="position:absolute;opacity:0;width:1px;height:1px">
     <div class="menu-btn" id="storage-info"><span>Storage</span><small>Checking</small></div>
     <button class="menu-btn" data-a="reset">Reset settings to defaults</button>
-    <button class="menu-btn danger" data-a="clear-stats">Clear reading stats</button>
-  </div>`, { tall: true });
+    <button class="menu-btn danger" data-a="clear-stats">Clear reading stats</button>`;
+  const pageNames = [...SETTINGS.map(([name]) => name), 'Library and data'];
+  const sheet = openSheet('Settings', `<div id="set-preview"></div><div class="sheet-body" id="set-body"></div>`, { tall: true });
+  const head = $('.sheet-head', sheet);
+  const heading = $('h2', head);
+  head.insertAdjacentHTML('afterbegin', `<button class="icon-btn set-back" id="set-back" aria-label="Back to settings" hidden>${icon('back')}</button>`);
+  const body = $('#set-body', sheet);
+  const previewSlot = $('#set-preview', sheet);
+  let currentPage = null;
+
   const preview = () => {
-    const parts = splitAtPivot('stillpoint', S.pivotMode);
     const rail = $('.pv-rail', sheet);
+    if (!rail) return;
+    const parts = splitAtPivot('stillpoint', S.pivotMode);
     const l = $('.pv-l', sheet); const p = $('.pv-p', sheet); const r = $('.pv-r', sheet);
     l.textContent = parts.left; p.textContent = parts.pivot; r.textContent = parts.right;
     const width = rail.clientWidth;
@@ -1371,9 +1390,41 @@ function showSettings() {
     p.style.left = `${anchor - pw / 2}px`;
     l.style.right = `${width - anchor + pw / 2}px`;
     r.style.left = `${anchor + pw / 2}px`;
+    $('.pv-tick', sheet).style.left = `${anchor - 1}px`;
   };
-  preview();
-  storageInfo($('#storage-info', sheet));
+  const slide = direction => {
+    if (reducedMotion()) return;
+    const from = direction === 'in' ? 28 : -28;
+    const frames = [{ opacity: 0, transform: `translateX(${from}px)` }, { opacity: 1, transform: 'none' }];
+    const timing = { duration: 240, easing: 'cubic-bezier(.2,.8,.2,1)' };
+    body.animate(frames, timing);
+    if (previewSlot.firstChild) previewSlot.animate(frames, timing);
+  };
+  const showPage = (name, direction = 'in') => {
+    currentPage = name;
+    body.scrollTop = 0;
+    heading.textContent = name || 'Settings';
+    $('#set-back', sheet).hidden = !name;
+    head.classList.toggle('sub', !!name);
+    const kind = PREVIEW[name];
+    previewSlot.innerHTML = kind === 'word'
+      ? `<div class="preview" aria-hidden="true"><div class="pv-tick"></div><div class="pv-rail"><span class="pv-l"></span><span class="pv-p"></span><span class="pv-r"></span></div></div>`
+      : kind === 'text'
+        ? `<div class="preview text" aria-hidden="true"><p>Each word arrives where your eyes already rest. When you pause, the page returns and your place is marked.</p></div>`
+        : '';
+    if (!name) {
+      body.innerHTML = pageNames.map(n => `<button class="set-nav" data-page="${esc(n)}"><span><b>${esc(n)}</b><small>${esc(SUMMARY[n]())}</small></span>${icon('back')}</button>`).join('');
+    } else if (name === 'Library and data') {
+      body.innerHTML = dataPage();
+      storageInfo($('#storage-info', sheet));
+    } else {
+      body.innerHTML = SETTINGS.find(([n]) => n === name)[1].map(control).join('');
+    }
+    preview();
+    slide(direction);
+  };
+  showPage(null, 'none');
+
   sheet.addEventListener('input', e => {
     const t = e.target;
     if (t.dataset.k) {
@@ -1406,12 +1457,20 @@ function showSettings() {
     }
     if (R) { updateWpm(); }
   });
+  sheet.addEventListener('change', e => {
+    if (e.target.id === 'restore' && e.target.files[0]) importBackup(e.target.files[0]);
+  });
   sheet.addEventListener('click', e => {
+    const nav = e.target.closest('[data-page]');
+    if (nav) { showPage(nav.dataset.page, 'in'); return; }
+    if (e.target.closest('#set-back')) { showPage(null, 'out'); return; }
     const pick = e.target.closest('[data-theme-pick]');
     if (pick) {
       S.theme = pick.dataset.themePick;
       $$('[data-theme-pick]', sheet).forEach(b => b.setAttribute('aria-pressed', b === pick));
-      navigate('fade', applySettings);
+      const rows = $('.custom-rows', sheet);
+      if (rows) rows.hidden = S.theme !== 'custom';
+      navigate('fade', () => { applySettings(); preview(); });
       saveSettings();
       return;
     }
@@ -1419,7 +1478,7 @@ function showSettings() {
     if (action === 'backup') exportBackup();
     if (action === 'reset') {
       confirmSheet('Reset settings?', 'Your books, progress, and stats will stay as they are.', 'Reset settings', () => {
-        S = { ...DEFAULTS };
+        S = { ...DEFAULTS, settingsVersion: 2 };
         applySettings();
         saveSettings();
         toast('Settings reset');
@@ -1432,7 +1491,6 @@ function showSettings() {
       });
     }
   });
-  $('#restore', sheet).onchange = e => { if (e.target.files[0]) importBackup(e.target.files[0]); };
 }
 async function storageInfo(el) {
   const small = $('small', el);
@@ -1760,6 +1818,9 @@ async function boot() {
   }
   const saved = await db.get('kv', 'settings').catch(() => null);
   if (saved) S = { ...DEFAULTS, ...saved };
+  // Moves anyone still on the old off-center default to the new centered one.
+  if (saved && !saved.settingsVersion && saved.pivotX === 40) S.pivotX = 50;
+  S.settingsVersion = 2;
   applySettings();
   navigator.storage?.persist?.().catch(() => {});
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
@@ -1770,6 +1831,8 @@ async function boot() {
   else await showLibrary();
   booted = true;
 }
+// The edge strips sit above the reader, so a tap on them still pauses reading.
+$$('.edge').forEach(el => el.addEventListener('click', () => { if (R && R.state !== 'paused' && !S.holdMode) pause(); }));
 // iOS only shows :active styles once a touch listener exists.
 document.addEventListener('touchstart', () => {}, { passive: true });
 boot();
