@@ -185,6 +185,33 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   ok('press and hold opens word menu', (await page.textContent('.sheet-head h2').catch(() => '')) === 'This word');
   await page.click('[data-close]').catch(() => {});
 
+
+  // Speed slider
+  await page.tap('#wpm-box'); await sleep(350);
+  await shot('14-slider');
+  ok('tapping the speed opens the slider', await sp(() => document.querySelector('#wpm-pop').classList.contains('open') && getComputedStyle(document.querySelector('#wpm-pop')).opacity === '1'));
+  await sp(() => { const r = document.querySelector('#wpm-slider'); r.value = 640; r.dispatchEvent(new Event('input', { bubbles: true })); r.dispatchEvent(new Event('change', { bubbles: true })); });
+  ok('slider sets an exact speed', (await sp(() => __stillpoint.R.wpm)) === 640 && (await page.textContent('#wpm-v')) === '640');
+  await page.tap('#flow-inner p'); await sleep(350);
+  ok('tapping outside closes the slider without playing', await sp(() => !document.querySelector('#wpm-pop').classList.contains('open') && __stillpoint.R.state === 'paused'));
+  await sleep(300);
+  await sp(() => { __stillpoint.R.wpm = 300; });
+
+  // Sheet motion
+  await page.tap('#r-toc'); await sleep(60);
+  const moving = await sp(() => document.querySelector('.sheet').getAnimations().length > 0);
+  ok('sheets animate in', moving);
+  await sleep(450);
+  await page.click('[data-close]'); await sleep(60);
+  ok('sheets animate out', await sp(() => !!document.querySelector('.scrim.leaving')));
+  await sleep(450);
+  ok('closed sheets are removed', await sp(() => !document.querySelector('.scrim')));
+  await page.tap('#r-toc'); await sleep(450);
+  const hb = await (await page.$('.sheet-head h2')).boundingBox();
+  await page.mouse.move(hb.x + 40, hb.y + 10); await page.mouse.down(); await page.mouse.move(hb.x + 40, hb.y + 220, { steps: 6 }); await page.mouse.up();
+  await sleep(450);
+  ok('dragging a sheet down dismisses it', await sp(() => !document.querySelector('.scrim')));
+
   // Settings
   await page.tap('#r-settings'); await page.waitForSelector('#set-body');
   await shot('10-settings');
@@ -193,9 +220,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const set = (id, v) => { const el = document.querySelector(id); el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); };
     set('#s-wordSize', 70); out.size = getComputedStyle(document.documentElement).getPropertyValue('--word-size');
     set('#s-pivotMode', 'middle'); out.mode = __stillpoint.S.pivotMode;
-    document.querySelector('[data-theme-pick=paper]').click(); out.bg = getComputedStyle(document.body).backgroundColor;
+    document.querySelector('[data-theme-pick=paper]').click();
     return out;
   });
+  await sleep(450);
+  applied.bg = await sp(() => getComputedStyle(document.body).backgroundColor);
   ok('settings apply live', applied.size === '70px' && applied.mode === 'middle' && applied.bg === 'rgb(247, 248, 245)', JSON.stringify(applied));
   await shot('11-settings-paper');
   await sp(() => { document.querySelector('[data-theme-pick=oled]').click(); const el = document.querySelector('#s-pivotMode'); el.value = 'orp'; el.dispatchEvent(new Event('input', { bubbles: true })); const s = document.querySelector('#s-wordSize'); s.value = 48; s.dispatchEvent(new Event('input', { bubbles: true })); });
@@ -233,6 +262,62 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(200);
   await shot('12-stats');
   ok('stats recorded a session', /words read/.test(await page.textContent('#app')), (await page.textContent('.tile b').catch(() => '')));
+
+  // Streak logic
+  const logic = await page.evaluate(async () => {
+    const { computeStreaks, monthGrid } = await import('/js/streaks.js');
+    const m = o => new Map(Object.entries(o));
+    const min = n => n * 60000;
+    const base = { goalMs: min(10), weekGoalDays: 1, weekStart: 0, today: '2026-11-04' };
+    return {
+      alive: computeStreaks({ ...base, dayMs: m({ '2026-11-03': min(10), '2026-11-02': min(12), '2026-11-01': min(30) }) }),
+      withToday: computeStreaks({ ...base, dayMs: m({ '2026-11-04': min(11), '2026-11-03': min(10) }) }),
+      broken: computeStreaks({ ...base, dayMs: m({ '2026-11-02': min(10), '2026-11-01': min(10) }) }),
+      short: computeStreaks({ ...base, dayMs: m({ '2026-11-03': min(9) }) }),
+      weeks: computeStreaks({ ...base, dayMs: m({ '2026-11-01': min(10), '2026-10-27': min(10), '2026-10-20': min(10), '2026-10-05': min(10) }) }),
+      weeksStrict: computeStreaks({ ...base, weekGoalDays: 2, dayMs: m({ '2026-11-01': min(10), '2026-10-27': min(10), '2026-10-28': min(10), '2026-10-20': min(10), '2026-10-21': min(10) }) }),
+      dst: computeStreaks({ ...base, today: '2026-03-09', dayMs: m({ '2026-03-07': min(10), '2026-03-08': min(10), '2026-03-09': min(10) }) }),
+      grid: monthGrid(2026, 10, 0).slice(0, 2), gridMon: monthGrid(2026, 10, 1).slice(0, 8).filter(x => !x).length,
+    };
+  });
+  ok('day streak survives until today is over', logic.alive.days === 3, logic.alive.days);
+  ok('today counts once the goal is met', logic.withToday.days === 2);
+  ok('a missed full day breaks the streak', logic.broken.days === 0 && logic.broken.bestDays === 2);
+  ok('reading under the minimum does not count', logic.short.days === 0);
+  ok('weeks in a row and best weeks', logic.weeks.weeks === 3 && logic.weeks.bestWeeks === 3, JSON.stringify([logic.weeks.weeks, logic.weeks.bestWeeks]));
+  ok('a stricter week goal holds an open week', logic.weeksStrict.weeks === 2, logic.weeksStrict.weeks);
+  ok('streaks work across daylight saving change', logic.dst.days === 3);
+  ok('calendar starts on the right weekday', logic.grid[0] === '2026-11-01' && logic.gridMon === 6, logic.gridMon);
+
+  // Seeded calendar
+  await page.evaluate(() => new Promise(res => {
+    const r = indexedDB.open('stillpoint');
+    r.onsuccess = () => {
+      const tx = r.result.transaction('sessions', 'readwrite');
+      const st = tx.objectStore('sessions');
+      const key = back => { const d = new Date(); d.setHours(12); d.setDate(d.getDate() - back); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+      [[0, 4], [1, 15], [2, 11], [3, 22], [5, 3]].forEach(([b, m]) => st.put({ bookId: 'x', title: 'Seed', day: key(b), at: Date.now() - b * 86400000, ms: m * 60000, words: m * 280 }));
+      tx.oncomplete = res;
+    };
+  }));
+  await page.click('#stats-back'); await page.waitForSelector('.book-row'); await sleep(350);
+  await page.tap('#go-stats'); await page.waitForSelector('#streak-days'); await sleep(400);
+  await shot('15-streaks');
+  ok('stats show days in a row', (await page.textContent('#streak-days')) === '3', await page.textContent('#streak-days'));
+  ok('calendar marks goal days and read days', await sp(() => document.querySelectorAll('.cal-day.hit').length >= 1 && document.querySelector('.cal-day.today.read') !== null));
+  await page.tap('.cal-day.today'); await sleep(100);
+  ok('tapping a day shows its details', /Under your 10 min goal/.test(await page.textContent('#cal-detail')), await page.textContent('#cal-detail'));
+  await page.tap('#goal-edit'); await page.waitForSelector('#g-dailyGoal'); await sleep(450);
+  await shot('16-goal');
+  await sp(() => { const r = document.querySelector('#g-dailyGoal'); r.value = 3; r.dispatchEvent(new Event('input', { bubbles: true })); });
+  await sleep(100);
+  ok('changing the minimum updates the streak', (await page.textContent('#streak-days')) === '4', await page.textContent('#streak-days'));
+  await page.click('[data-close]'); await sleep(450);
+  await page.tap('#cal-prev'); await sleep(150);
+  ok('calendar moves between months', !!(await page.textContent('#cal-title')));
+  await page.tap('#cal-next'); await sleep(150);
+  await sp(() => { __stillpoint.S.dailyGoal = 10; });
+
   await page.click('#stats-back');
   await page.waitForSelector('.book-row');
 
@@ -253,6 +338,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sp(() => { __stillpoint.S.holdMode = true; __stillpoint.S.wordsPerFlash = 2; });
   await page.click('.book-open >> nth=0');
   await page.waitForSelector('#reader');
+  await sleep(450);
   await touch('touchStart', 200, 400); await sleep(700);
   ok('hold to read plays without a countdown', await sp(() => __stillpoint.R.state === 'playing'));
   ok('multiple words per flash work', /\S\s\S|—\S/.test(await sp(() => __stillpoint.R.lastText)), await sp(() => __stillpoint.R.lastText));
@@ -297,6 +383,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(200);
   await shot('13-landscape');
 
+  ok('edge bars are solid', await sp(() => { const c = getComputedStyle(document.querySelector('.edge-top')); return c.position === 'fixed' && !/rgba|transparent/.test(c.backgroundColor) && c.height === '6px'; }));
+  ok('reader bars are opaque', await sp(() => { const c = getComputedStyle(document.querySelector('#top-bar')); return !/rgba|transparent/.test(c.backgroundColor) && (c.backdropFilter === 'none' || !c.backdropFilter); }));
   ok('no app errors during the run', errors.length === 0, errors.slice(0, 5).join(' | '));
   await browser.close();
   const failed = results.filter(r => !r[0]);

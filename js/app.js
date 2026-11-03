@@ -4,6 +4,7 @@ import {
 } from './engine.js';
 import { ImportError, finishPdf, importFile, textToBook } from './importers.js';
 import { defaultCleanOptions, parsePageList } from './pdfclean.js';
+import { computeStreaks, monthGrid } from './streaks.js';
 import { SOUND_OPTIONS, playSound, setVolume, stopSound, unlockAudio } from './sounds.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -67,11 +68,17 @@ const DEFAULTS = {
   wpm: 300, wpmStep: 25, wpmMin: 50, wpmMax: 1500, perBookWpm: true, countdown: 3, ramp: 5, rewind: 10, resumeBack: 0,
   smartPacing: true, commaPause: 1.4, sentencePause: 1.9, paragraphPause: 2.2, longWordPause: 1, chapterPause: 1500,
   sound: 'off', volume: 0.5, soundMode: 'reading',
+  dailyGoal: 10, weekGoalDays: 1, weekStart: 0,
   tapToPlay: true, holdMode: false, swipeSize: 36, openLast: true, keepAwake: true,
 };
 let S = { ...DEFAULTS };
 
 const pct = v => `${Math.round(v * 100)}%`;
+const GOAL_SETTINGS = [
+  { k: 'dailyGoal', label: 'Daily minimum', help: 'Read at least this long for a day to count toward your streak.', type: 'range', min: 1, max: 120, step: 1, unit: ' min' },
+  { k: 'weekGoalDays', label: 'Goal days for a week to count', type: 'range', min: 1, max: 7, step: 1 },
+  { k: 'weekStart', label: 'Weeks start on', type: 'select', num: true, options: [[0, 'Sunday'], [1, 'Monday']] },
+];
 const SETTINGS = [
   ['Colors', [{ type: 'themes' }, { type: 'custom' }]],
   ['RSVP word', [
@@ -118,6 +125,7 @@ const SETTINGS = [
     { k: 'volume', label: 'Volume', type: 'range', min: 0, max: 1, step: 0.05, format: pct },
     { k: 'soundMode', label: 'Play', type: 'select', options: [['reading', 'Only while reading'], ['reader', 'Whenever a book is open']] },
   ]],
+  ['Reading goal', GOAL_SETTINGS],
   ['Controls', [
     { k: 'tapToPlay', label: 'Tap the text to play', help: 'When off, use the play button to start.', type: 'toggle' },
     { k: 'holdMode', label: 'Hold to read', help: 'Words play while your finger is down and stop when you lift it.', type: 'toggle' },
@@ -174,26 +182,78 @@ function toast(message, ms = 2600) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('on'), ms);
 }
+const activeScrim = () => $('#sheets > .scrim:not(.leaving)');
+let sheetClose = null;
+let blockScrim = false;
+
 function openSheet(title, bodyHTML, { tall = false, onClose } = {}) {
-  closeSheet();
   const root = $('#sheets');
-  root.innerHTML = `<div class="scrim"><section class="sheet ${tall ? 'tall' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+  const replacing = !!activeScrim();
+  const previousClose = sheetClose;
+  sheetClose = null;
+  root.innerHTML = '';
+  previousClose?.();
+  root.innerHTML = `<div class="scrim ${replacing ? 'swap' : ''}"><section class="sheet ${tall ? 'tall' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
     <header class="sheet-head"><h2>${esc(title)}</h2><button class="icon-btn" data-close aria-label="Close">${icon('close')}</button></header>
     <div class="sheet-slot" style="display:contents">${bodyHTML}</div></section></div>`;
   sheetClose = onClose || null;
   const scrim = $('.scrim', root);
+  const sheet = $('.sheet', root);
   scrim.addEventListener('click', e => {
     if (e.target === scrim && blockScrim) return;
     if (e.target === scrim || e.target.closest('[data-close]')) closeSheet();
   });
-  return $('.sheet', root);
+  bindSheetDrag(sheet);
+  return sheet;
 }
-let sheetClose = null;
-let blockScrim = false;
 function closeSheet() {
-  const had = $('#sheets').firstChild;
-  $('#sheets').innerHTML = '';
-  if (had && sheetClose) { const fn = sheetClose; sheetClose = null; fn(); }
+  const scrim = activeScrim();
+  if (!scrim) return;
+  scrim.classList.remove('swap');
+  const sheet = $('.sheet', scrim);
+  sheet.classList.remove('dragging', 'settling');
+  scrim.classList.add('leaving');
+  const remove = () => scrim.remove();
+  scrim.addEventListener('animationend', e => { if (e.target === scrim) remove(); });
+  setTimeout(remove, reducedMotion() ? 0 : 320);
+  if (sheetClose) { const fn = sheetClose; sheetClose = null; fn(); }
+}
+// Drag the top of a sheet down to dismiss it.
+function bindSheetDrag(sheet) {
+  const head = $('.sheet-head', sheet);
+  let start = null;
+  head.addEventListener('pointerdown', e => {
+    if (e.target.closest('button')) return;
+    start = { y: e.clientY, t: performance.now(), id: e.pointerId };
+    sheet.classList.add('dragging');
+    sheet.classList.remove('settling');
+    try { head.setPointerCapture(e.pointerId); } catch {}
+  });
+  head.addEventListener('pointermove', e => {
+    if (!start || e.pointerId !== start.id) return;
+    const dy = Math.max(0, e.clientY - start.y);
+    sheet.style.animation = 'none';
+    sheet.style.transform = `translateY(${dy}px)`;
+  });
+  const end = e => {
+    if (!start || e.pointerId !== start.id) return;
+    const dy = Math.max(0, e.clientY - start.y);
+    const fast = dy > 30 && performance.now() - start.t < 220;
+    start = null;
+    sheet.classList.remove('dragging');
+    if (dy > 110 || fast) {
+      sheet.style.animation = '';
+      sheet.animate([{ transform: `translateY(${dy}px)` }, { transform: 'translateY(100%)' }], { duration: 220, easing: 'ease-in', fill: 'forwards' });
+      const scrim = sheet.parentElement;
+      closeSheet();
+      scrim.querySelector('.sheet').style.animation = 'none';
+    } else {
+      sheet.classList.add('settling');
+      sheet.style.transform = '';
+    }
+  };
+  head.addEventListener('pointerup', end);
+  head.addEventListener('pointercancel', end);
 }
 function confirmSheet(title, message, action, onYes) {
   const sheet = openSheet(title, `<div class="sheet-body"><p class="muted">${esc(message)}</p>
@@ -206,15 +266,36 @@ function isStandalone() {
 }
 const looksLikeIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
+/* ---------- Screen changes ---------- */
+let booted = false;
+function navigate(direction, render) {
+  const root = document.documentElement;
+  if (!booted || !document.startViewTransition || reducedMotion() || document.visibilityState !== 'visible') {
+    render();
+    return;
+  }
+  root.dataset.nav = direction;
+  const transition = document.startViewTransition(render);
+  transition.ready.catch(() => {});
+  transition.updateCallbackDone.catch(error => console.error(error));
+  transition.finished.catch(() => {}).finally(() => { delete root.dataset.nav; });
+}
+
 /* ---------- Library ---------- */
 let libQuery = '';
 let libSort = 'recent';
 
-async function showLibrary() {
+const cleanAuthor = author => String(author || '').replace(/[;,\s]+$/, '');
+
+async function showLibrary(direction = 'back') {
   history.replaceState(null, '', '#');
   await db.put('kv', null, 'lastBook').catch(() => {});
   document.title = 'Stillpoint';
   const books = await db.getAll('books');
+  navigate(direction, () => renderLibrary(books));
+}
+
+function renderLibrary(books) {
   const app = $('#app');
   const installNote = looksLikeIOS() && !isStandalone()
     ? `<div class="install-note"><strong>Install Stillpoint before adding books</strong>Tap Share in Safari, then Add to Home Screen. Books added in Safari may not appear in the installed app.</div>` : '';
@@ -259,7 +340,7 @@ async function showLibrary() {
       return `<article class="book-row">
         <button class="book-open" data-open="${esc(b.id)}">
           <h2 class="book-title">${esc(b.title)}</h2>
-          ${b.author ? `<div class="book-author">${esc(b.author)}</div>` : ''}
+          ${b.author ? `<div class="book-author">${esc(cleanAuthor(b.author))}</div>` : ''}
           <div class="book-progress"><i style="width:${done ? 100 : p}%"></i></div>
           <div class="book-meta"><span>${done ? 100 : p}%</span><span>${left}</span></div>
         </button>
@@ -350,7 +431,7 @@ async function storeBook(parsed) {
   const id = uid();
   const now = Date.now();
   const book = {
-    id, title: parsed.title || 'Untitled', author: parsed.author || '', format: parsed.format,
+    id, title: parsed.title || 'Untitled', author: cleanAuthor(parsed.author), format: parsed.format,
     addedAt: now, lastReadAt: 0, wordCount: words.length, pos: 0, finishedAt: null, wpm: null,
     chapters: parsed.chapters || [], bookmarks: [],
   };
@@ -476,7 +557,7 @@ async function openBook(id) {
   document.title = book.title;
   history.replaceState(null, '', '#reading');
   closeSheet();
-  renderReader();
+  navigate('forward', renderReader);
 }
 let segStartsCache = [];
 
@@ -495,6 +576,11 @@ function renderReader() {
     </div>
     <div id="wpm-badge" aria-hidden="true"></div>
     <button id="back-place" hidden>Back to my place</button>
+    <div id="wpm-pop">
+      <div class="pop-value"><span id="pop-v"></span><small>WPM</small></div>
+      <input id="wpm-slider" type="range" step="5" aria-label="Reading speed in words per minute">
+      <div class="pop-ends"><span id="pop-min"></span><span id="pop-time"></span><span id="pop-max"></span></div>
+    </div>
     <header class="bar" id="top-bar">
       <button class="icon-btn" id="r-back" aria-label="Back to library">${icon('back')}</button>
       <button id="chapter-btn" aria-label="Open chapters"><b id="c-title"></b><small id="c-book"></small></button>
@@ -513,7 +599,7 @@ function renderReader() {
         <button id="play" aria-label="Play">${icon('play')}</button>
         <div class="side right">
           <button class="icon-btn" id="w-down" aria-label="Slower">${icon('minus')}</button>
-          <div id="wpm-box"><b id="wpm-v"></b><small>WPM</small></div>
+          <button id="wpm-box" aria-label="Choose reading speed" aria-expanded="false" aria-controls="wpm-pop"><b id="wpm-v"></b><small>WPM</small></button>
           <button class="icon-btn" id="w-up" aria-label="Faster">${icon('plus')}</button>
           <button class="icon-btn" id="r-sound" aria-label="Ambient sound">${icon('sound')}</button>
         </div>
@@ -718,7 +804,13 @@ function currentChapter(pos) {
 function updateWpm(showBadge) {
   const v = $('#wpm-v');
   if (v) v.textContent = R.wpm;
-  if (showBadge) {
+  const popValue = $('#pop-v');
+  if (popValue) {
+    popValue.textContent = R.wpm;
+    $('#wpm-slider').value = R.wpm;
+    $('#pop-time').textContent = `${formatDuration(estimateMs(R.words.length - R.pos, R.wpm, S.smartPacing))} left`;
+  }
+  if (showBadge && !wpmPopOpen()) {
     const badge = $('#wpm-badge');
     badge.textContent = `${R.wpm} WPM`;
     badge.classList.add('on');
@@ -726,6 +818,30 @@ function updateWpm(showBadge) {
     R.badgeTimer = setTimeout(() => badge.classList.remove('on'), 900);
   }
   updateMeta();
+}
+const wpmPopOpen = () => !!$('#wpm-pop')?.classList.contains('open');
+function toggleWpmPop(open) {
+  const pop = $('#wpm-pop');
+  if (!pop) return;
+  if (open) {
+    pop.style.bottom = `${$('#bottom-bar').offsetHeight + 8}px`;
+    const slider = $('#wpm-slider');
+    slider.min = S.wpmMin;
+    slider.max = S.wpmMax;
+    $('#pop-min').textContent = S.wpmMin;
+    $('#pop-max').textContent = S.wpmMax;
+    updateWpm();
+  }
+  pop.classList.toggle('open', open);
+  $('#wpm-box').setAttribute('aria-expanded', open);
+}
+function setWpm(value) {
+  const next = clamp(value, S.wpmMin, S.wpmMax);
+  if (next === R.wpm) return;
+  R.wpm = next;
+  R.book.wpm = next;
+  updateWpm();
+  saveProgress();
 }
 function changeWpm(steps) {
   const next = clamp(Math.round((R.wpm + steps * S.wpmStep) / S.wpmStep) * S.wpmStep, S.wpmMin, S.wpmMax);
@@ -779,6 +895,7 @@ function flyWord(fromRect, toRect, text, fontCSS, done) {
 }
 function play(options = {}) {
   if (!R || R.state !== 'paused') return;
+  toggleWpmPop(false);
   if (R.pos >= R.words.length - 1) R.pos = 0;
   unlockAudio();
   if (S.sound !== 'off') playSound(S.sound, S.volume);
@@ -786,7 +903,7 @@ function play(options = {}) {
   if (S.resumeBack && !options.fromSeek) R.pos = Math.max(0, R.pos - S.resumeBack);
   const run = ++R.run;
   R.sinceplay = 0;
-  R.sessionStart = performance.now();
+  R.sessionStart = 0;
   R.sessionWords = 0;
   $('#back-place').hidden = true;
   const source = wordEl(R.pos);
@@ -808,6 +925,7 @@ function play(options = {}) {
       if (left <= 0) {
         count.textContent = '';
         setMode('playing');
+        R.sessionStart = performance.now();
         R.nextAt = performance.now();
         tick(run);
         return;
@@ -939,6 +1057,9 @@ function bindReader() {
   $('#w-down').onclick = () => changeWpm(-1);
   $('#r-sound').onclick = showSoundSheet;
   $('#play').onclick = () => togglePlay();
+  $('#wpm-box').onclick = () => toggleWpmPop(!wpmPopOpen());
+  $('#wpm-slider').oninput = e => setWpm(Number(e.target.value));
+  $('#wpm-slider').onchange = () => saveProgress(true);
   $('#back-place').onclick = () => showFlowAt(R.pos, true);
   const scrub = $('#scrub');
   scrub.oninput = () => {
@@ -952,8 +1073,12 @@ function bindReader() {
   };
 
   let g = null;
-  const isControl = t => t.closest('button, input, .bar, label, select, a');
+  const isControl = t => t.closest('button, input, .bar, label, select, a, #wpm-pop');
   reader.addEventListener('pointerdown', e => {
+    if (wpmPopOpen() && !e.target.closest('#wpm-pop, #wpm-box')) {
+      toggleWpmPop(false);
+      if (!e.target.closest('button, input, .bar')) { g = null; return; }
+    }
     if (isControl(e.target) || (e.pointerType === 'mouse' && e.button !== 0)) return;
     g = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), mode: null, wpmSteps: 0, startPos: R.pos, wasPlaying: R.state === 'playing' };
     if (S.holdMode && R.state === 'paused') {
@@ -1114,6 +1239,9 @@ function showToc(tab) {
       q.oninput = () => { clearTimeout(timer); timer = setTimeout(() => runSearch(q.value, $('#hits', body)), 180); };
       q.focus();
     }
+    body.classList.remove('fade-in');
+    void body.offsetWidth;
+    body.classList.add('fade-in');
   };
   sheet.onclick = e => {
     const tabBtn = e.target.closest('[data-t]');
@@ -1283,7 +1411,7 @@ function showSettings() {
     if (pick) {
       S.theme = pick.dataset.themePick;
       $$('[data-theme-pick]', sheet).forEach(b => b.setAttribute('aria-pressed', b === pick));
-      applySettings();
+      navigate('fade', applySettings);
       saveSettings();
       return;
     }
@@ -1431,6 +1559,89 @@ function chartSVG(kind, days, values) {
     <text x="${W}" y="${H - 4}" text-anchor="end">Today</text>
     ${marks}${hit}</svg>`;
 }
+const formatTime = ms => (ms < 60000 ? (ms ? 'under a minute' : 'no reading') : formatDuration(ms));
+let calMonth = null;
+let calSelected = null;
+
+function statsNumbers(sessions) {
+  const dayMs = new Map();
+  const dayWords = new Map();
+  sessions.forEach(s => {
+    dayMs.set(s.day, (dayMs.get(s.day) || 0) + s.ms);
+    dayWords.set(s.day, (dayWords.get(s.day) || 0) + s.words);
+  });
+  const today = dayKey(new Date());
+  const streaks = computeStreaks({ dayMs, goalMs: S.dailyGoal * 60000, weekGoalDays: S.weekGoalDays, weekStart: S.weekStart, today });
+  return { dayMs, dayWords, today, streaks };
+}
+
+function streakHTML(n) {
+  const { streaks } = n;
+  const goalMs = S.dailyGoal * 60000;
+  const ratio = Math.min(1, streaks.todayMs / goalMs);
+  const minutes = Math.floor(streaks.todayMs / 60000);
+  const weekNeed = S.weekGoalDays === 1 ? 'Any goal day counts the week' : `${S.weekGoalDays} goal days count the week`;
+  return `<div class="streak-pair">
+      <div><div class="streak-num" id="streak-days">${streaks.days}</div><div class="streak-label">${streaks.days === 1 ? 'day' : 'days'} in a row</div><div class="streak-best">Best: ${streaks.bestDays}</div></div>
+      <div><div class="streak-num" id="streak-weeks">${streaks.weeks}</div><div class="streak-label">${streaks.weeks === 1 ? 'week' : 'weeks'} in a row</div><div class="streak-best">Best: ${streaks.bestWeeks}</div></div>
+    </div>
+    <div class="goal-today">
+      <div class="goal-line"><span id="goal-text">${streaks.todayHit ? `Goal met today: ${minutes} of ${S.dailyGoal} min` : `${minutes} of ${S.dailyGoal} min today`}</span><button class="goal-edit" id="goal-edit">Change goal</button></div>
+      <div class="goal-bar"><i style="width:${ratio * 100}%"></i></div>
+      <div class="streak-best" style="margin-top:7px">${weekNeed}. ${streaks.goalDaysThisWeek} so far this week.</div>
+    </div>`;
+}
+
+function calendarHTML(n) {
+  const [year, month] = calMonth;
+  const cells = monthGrid(year, month, S.weekStart);
+  const names = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const dow = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+  const header = Array.from({ length: 7 }, (_, i) => `<div class="cal-dow" aria-hidden="true">${dow[(i + S.weekStart) % 7]}</div>`).join('');
+  const goalMs = S.dailyGoal * 60000;
+  const days = cells.map(key => {
+    if (!key) return '<div></div>';
+    const ms = n.dayMs.get(key) || 0;
+    const future = key > n.today;
+    const state = ms >= goalMs ? 'hit' : ms > 0 ? 'read' : '';
+    const status = state === 'hit' ? 'goal met' : state === 'read' ? 'read' : 'no reading';
+    return `<button class="cal-day ${state} ${key === n.today ? 'today' : ''}" data-day="${key}" ${future ? 'disabled' : ''} aria-pressed="${key === calSelected}" aria-label="${shortDay(key)}, ${status}">${Number(key.slice(8))}</button>`;
+  }).join('');
+  const now = new Date();
+  const atCurrent = year === now.getFullYear() && month === now.getMonth();
+  return `<div class="cal-head"><h3 id="cal-title">${names[month]} ${year}</h3>
+      <div class="cal-nav"><button class="icon-btn" id="cal-prev" aria-label="Previous month">${icon('back')}</button>
+      <button class="icon-btn cal-next" id="cal-next" aria-label="Next month" ${atCurrent ? 'disabled' : ''}>${icon('back')}</button></div></div>
+    <div class="cal-grid fade-in">${header}${days}</div>
+    <div class="cal-legend"><span><i class="fill"></i>Goal met</span><span><i></i>Read</span></div>
+    <div class="cal-detail" id="cal-detail" role="status"></div>`;
+}
+
+function dayDetail(n, key) {
+  const ms = n.dayMs.get(key) || 0;
+  if (!ms) return `${shortDay(key)}: no reading.`;
+  const met = ms >= S.dailyGoal * 60000 ? 'Goal met.' : `Under your ${S.dailyGoal} min goal.`;
+  return `${shortDay(key)}: ${formatTime(ms)}, ${fmt(n.dayWords.get(key) || 0)} words. ${met}`;
+}
+
+function showGoalSheet(onChange) {
+  const value = c => `${S[c.k]}${c.unit || ''}`;
+  const sheet = openSheet('Reading goal', `<div class="sheet-body">
+    ${GOAL_SETTINGS.filter(c => c.type === 'range').map(c => `<div class="set-row"><div class="set-line"><label for="g-${c.k}">${esc(c.label)}${c.help ? `<small class="set-help">${esc(c.help)}</small>` : ''}</label><span class="set-value" data-gv="${c.k}">${value(c)}</span></div>
+      <input id="g-${c.k}" type="range" data-gk="${c.k}" min="${c.min}" max="${c.max}" step="${c.step}" value="${S[c.k]}"></div>`).join('')}
+    <div class="set-row"><div class="set-line"><label for="g-weekStart">Weeks start on</label><select id="g-weekStart" data-gk="weekStart"><option value="0" ${S.weekStart === 0 ? 'selected' : ''}>Sunday</option><option value="1" ${S.weekStart === 1 ? 'selected' : ''}>Monday</option></select></div></div>
+    <p class="muted">Changes apply to your past days too, so your streak may change.</p></div>`);
+  sheet.addEventListener('input', e => {
+    const k = e.target.dataset.gk;
+    if (!k) return;
+    S[k] = Number(e.target.value);
+    const label = $(`[data-gv="${k}"]`, sheet);
+    if (label) label.textContent = value(GOAL_SETTINGS.find(c => c.k === k));
+    saveSettings();
+    onChange();
+  });
+}
+
 async function showStats() {
   const [sessions, books] = await Promise.all([db.getAll('sessions'), db.getAll('books')]);
   const words = sessions.reduce((a, s) => a + s.words, 0);
@@ -1452,12 +1663,19 @@ async function showStats() {
     byBook.set(s.bookId, e);
   });
   const finished = books.filter(b => b.finishedAt).length;
+  const numbers = statsNumbers(sessions);
+  const nowDate = new Date();
+  calMonth = [nowDate.getFullYear(), nowDate.getMonth()];
+  calSelected = null;
+  navigate('forward', () => {
   $('#app').innerHTML = `<main class="screen">
     <header class="screen-head" style="padding-left:calc(var(--safe-l) + 8px)">
       <button class="icon-btn" id="stats-back" aria-label="Back to library">${icon('back')}</button>
       <h1 class="wordmark" style="font-size:26px">Reading stats</h1></header>
     <div class="screen-body">
-      ${sessions.length ? `<div class="tile-grid">
+      <div id="streak-box">${streakHTML(numbers)}</div>
+      <div id="cal-box">${calendarHTML(numbers)}</div>
+      ${sessions.length ? `<div class="chart-head"><h3>All time</h3></div><div class="tile-grid">
         <div class="tile"><b>${words >= 100000 ? `${+(words / 1000).toFixed(0)}k` : fmt(words)}</b><span>words read</span></div>
         <div class="tile"><b>${formatDuration(ms).replace('under a minute', '<1 min')}</b><span>reading time</span></div>
         <div class="tile"><b>${fmt(sessions.length)}</b><span>${sessions.length === 1 ? 'session' : 'sessions'}</span></div>
@@ -1470,9 +1688,35 @@ async function showStats() {
       <div id="chart-b">${dayWpm.some(v => v != null) ? chartSVG('line', days, dayWpm) : '<p class="muted">No reading in the last 14 days.</p>'}</div>
       <div class="chart-head"><h3>By book</h3></div>
       ${[...byBook.values()].sort((a, b) => b.words - a.words).map(b => `<div class="book-stat"><span>${esc(b.title)}</span><span>${fmt(b.words)} words</span></div>`).join('')}`
-    : `<div class="empty"><h2>Your reading history will appear here.</h2><p>Open a book and press play to record your first session.</p></div>`}
+    : `<p class="muted">Open a book and press play to record your first session.</p>`}
     </div></main>`;
-  $('#stats-back').onclick = showLibrary;
+  $('#stats-back').onclick = () => showLibrary('back');
+  const redrawStreaks = () => {
+    const fresh = statsNumbers(sessions);
+    $('#streak-box').innerHTML = streakHTML(fresh);
+    $('#cal-box').innerHTML = calendarHTML(fresh);
+    if (calSelected) $('#cal-detail').textContent = dayDetail(fresh, calSelected);
+    return fresh;
+  };
+  const statsBody = $('.screen-body');
+  statsBody.addEventListener('click', e => {
+    const fresh = statsNumbers(sessions);
+    if (e.target.closest('#goal-edit')) { showGoalSheet(redrawStreaks); return; }
+    if (e.target.closest('#cal-prev') || e.target.closest('#cal-next')) {
+      const delta = e.target.closest('#cal-prev') ? -1 : 1;
+      const d = new Date(calMonth[0], calMonth[1] + delta, 1);
+      calMonth = [d.getFullYear(), d.getMonth()];
+      calSelected = null;
+      redrawStreaks();
+      return;
+    }
+    const day = e.target.closest('[data-day]');
+    if (day) {
+      calSelected = day.dataset.day;
+      $$('[data-day]', statsBody).forEach(b => b.setAttribute('aria-pressed', b === day));
+      $('#cal-detail').textContent = dayDetail(fresh, calSelected);
+    }
+  });
   const wire = (id, read, text) => {
     const box = $(id);
     if (!box) return;
@@ -1485,11 +1729,12 @@ async function showStats() {
   };
   wire('#chart-a', '#read-a', i => `${shortDay(days[i])}: ${fmt(dayWords[i])} words`);
   wire('#chart-b', '#read-b', i => `${shortDay(days[i])}: ${dayWpm[i] == null ? 'no reading' : `${fmt(dayWpm[i])} WPM`}`);
+  });
 }
 
 /* ---------- App lifecycle ---------- */
 document.addEventListener('keydown', e => {
-  if (!R || $('#sheets').firstChild || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+  if (!R || activeScrim() || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
   if (e.key === ' ') { e.preventDefault(); togglePlay(); }
   if (e.key === 'ArrowUp') { e.preventDefault(); changeWpm(1); }
   if (e.key === 'ArrowDown') { e.preventDefault(); changeWpm(-1); }
@@ -1521,9 +1766,12 @@ async function boot() {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
   const last = await db.get('kv', 'lastBook').catch(() => null);
-  if (S.openLast && last && await db.get('books', last)) openBook(last);
-  else showLibrary();
+  if (S.openLast && last && await db.get('books', last)) await openBook(last);
+  else await showLibrary();
+  booted = true;
 }
+// iOS only shows :active styles once a touch listener exists.
+document.addEventListener('touchstart', () => {}, { passive: true });
 boot();
 
 // Lets the automated tests read state.
