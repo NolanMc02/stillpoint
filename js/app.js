@@ -5,7 +5,9 @@ import {
 import { ImportError, finishPdf, importFile, textToBook } from './importers.js';
 import { defaultCleanOptions, parsePageList } from './pdfclean.js';
 import { computeStreaks, monthGrid } from './streaks.js';
-import { SOUND_OPTIONS, playSound, setVolume, stopSound, unlockAudio } from './sounds.js';
+import {
+  SOUND_OPTIONS, analyzeTrack, dropTrack, playSound, setTrackLevel, setTrackSource, setVolume, stopSound, unlockAudio,
+} from './sounds.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -63,11 +65,11 @@ const fontOptions = Object.entries(FONTS).map(([k, v]) => [k, v[0]]);
 const DEFAULTS = {
   theme: 'tide', customBg: '#102A2A', customInk: '#E6EFE8', customHi: '#FF9F5A',
   wordFont: 'newyork', wordSize: 48, wordWeight: 500, wordY: 42, pivotX: 50, pivotMode: 'orp', pivotStyle: 'color',
-  guides: true, wordsPerFlash: 1, liveProgress: true, liveText: false, chapterCall: true,
+  guides: true, guideDist: 100, wordsPerFlash: 1, liveProgress: true, liveText: false, chapterCall: true,
   textFont: 'iowan', textSize: 19, textLead: 1.6, textMargin: 22, textAlign: 'left',
   wpm: 300, wpmStep: 25, wpmMin: 50, wpmMax: 1500, perBookWpm: true, countdown: 3, ramp: 5, rewind: 10, resumeBack: 0,
   smartPacing: true, commaPause: 1.4, sentencePause: 1.9, paragraphPause: 2.2, longWordPause: 1, chapterPause: 1500,
-  sound: 'off', volume: 0.5, soundMode: 'reading',
+  sound: 'off', volume: 0.5, soundMode: 'reading', hiddenSounds: [], backupTracks: true,
   dailyGoal: 10, weekGoalDays: 1, weekStart: 0,
   tapToPlay: true, holdMode: false, swipeSize: 36, openLast: true, keepAwake: true,
 };
@@ -88,6 +90,7 @@ const SETTINGS = [
     { k: 'pivotMode', label: 'Highlighted letter', help: 'Best spot sits slightly left of center, where word recognition tends to be fastest.', type: 'select', options: [['orp', 'Best spot'], ['middle', 'True middle']] },
     { k: 'pivotStyle', label: 'Highlight style', type: 'select', options: [['color', 'Color'], ['bold', 'Color and bold'], ['underline', 'Color and underline'], ['plain', 'None']] },
     { k: 'guides', label: 'Focus marks', help: 'Two small marks above and below the highlighted letter.', type: 'toggle' },
+    { k: 'guideDist', label: 'Focus mark distance', help: 'How far the marks sit from the word. 100% is the standard distance.', type: 'range', min: 100, max: 200, step: 5, unit: '%' },
     { k: 'pivotX', label: 'Horizontal position', help: '50% puts the highlighted letter in the center of the screen.', type: 'range', min: 25, max: 65, step: 1, unit: '%' },
     { k: 'wordY', label: 'Vertical position', type: 'range', min: 20, max: 70, step: 1, unit: '%' },
     { k: 'wordsPerFlash', label: 'Words per flash', type: 'range', min: 1, max: 5, step: 1 },
@@ -121,7 +124,7 @@ const SETTINGS = [
     { k: 'chapterPause', label: 'Pause between chapters', type: 'range', min: 0, max: 5000, step: 250, format: v => `${(v / 1000).toFixed(2).replace(/0$/, '')} s` },
   ]],
   ['Ambient sound', [
-    { k: 'sound', label: 'Sound', type: 'select', options: SOUND_OPTIONS },
+    { type: 'tracks' },
     { k: 'volume', label: 'Volume', type: 'range', min: 0, max: 1, step: 0.05, format: pct },
     { k: 'soundMode', label: 'Play', type: 'select', options: [['reading', 'Only while reading'], ['reader', 'Whenever a book is open']] },
   ]],
@@ -149,6 +152,7 @@ function applySettings() {
     '--bg': c.bg, '--ink': c.ink, '--hi': c.hi,
     '--word-font': FONTS[S.wordFont]?.[1], '--word-size': `${S.wordSize}px`, '--word-weight': S.wordWeight,
     '--word-y': `${S.wordY}%`, '--pivot-x': `${S.pivotX}%`,
+    '--guide-dist': S.guideDist / 100, '--guide-shift': S.guides ? (S.guideDist / 100 - 1) * 0.86 : 0,
     '--text-font': FONTS[S.textFont]?.[1], '--text-size': `${S.textSize}px`, '--text-lead': S.textLead,
     '--text-margin': `${S.textMargin}px`, '--text-align': S.textAlign,
   };
@@ -562,6 +566,7 @@ async function openBook(id) {
 let segStartsCache = [];
 
 function renderReader() {
+  R.jump = null;
   $('#app').innerHTML = `<div id="reader">
     <div id="flow" tabindex="-1"><div id="flow-inner"></div></div>
     <div id="stage" aria-live="off">
@@ -576,6 +581,10 @@ function renderReader() {
     </div>
     <div id="wpm-badge" aria-hidden="true"></div>
     <button id="back-place" hidden>Back to my place</button>
+    <div id="jump-bar" role="group" aria-label="Jump in book" hidden>
+      <span id="jump-text"></span>
+      <span class="jump-btns"><button class="primary" id="jump-go"></button><button class="secondary" id="jump-back">Back to my spot</button></span>
+    </div>
     <div id="wpm-pop">
       <div class="pop-value"><span id="pop-v"></span><small>WPM</small></div>
       <input id="wpm-slider" type="range" step="5" aria-label="Reading speed in words per minute">
@@ -707,7 +716,7 @@ function onFlowScroll() {
       R.loaded[1]--;
     }
   }
-  if (performance.now() > (R.ignoreScrollUntil || 0)) {
+  if (performance.now() > (R.ignoreScrollUntil || 0) && !R.jump) {
     const el = wordEl(R.pos);
     let away = true;
     if (el) {
@@ -772,13 +781,15 @@ function layoutWord(left, pivot, right, box, size) {
 function updateMeta() {
   if (!R) return;
   const total = Math.max(1, R.words.length - 1);
-  const ratio = R.pos / total;
+  // While a jump waits for confirmation, the bar shows where it would land and the saved spot stays put.
+  const pos = R.jump ? R.jump.to : R.pos;
+  const ratio = pos / total;
   const fill = $('#scrub-fill');
   if (fill) fill.style.width = `${ratio * 100}%`;
   const scrub = $('#scrub');
-  if (scrub && !R.scrubbing) scrub.value = R.pos;
+  if (scrub && !R.scrubbing) scrub.value = pos;
   const pctEl = $('#m-pct');
-  const left = formatDuration(estimateMs(R.words.length - R.pos, R.wpm, S.smartPacing));
+  const left = formatDuration(estimateMs(R.words.length - pos, R.wpm, S.smartPacing));
   if (pctEl) {
     pctEl.textContent = `${Math.round(ratio * 100)}%`;
     $('#m-left').textContent = `${left} left`;
@@ -787,7 +798,7 @@ function updateMeta() {
   if (lp) lp.style.width = `${ratio * 100}%`;
   const lt = $('#live-text');
   if (lt) lt.textContent = `${left} left`;
-  const ch = currentChapter(R.pos);
+  const ch = currentChapter(pos);
   const title = $('#c-title');
   if (title) {
     title.textContent = ch ? ch.title : R.book.title;
@@ -898,6 +909,8 @@ function play(options = {}) {
   toggleWpmPop(false);
   if (R.pos >= R.words.length - 1) R.pos = 0;
   unlockAudio();
+  if (R.jump) clearJump();
+  hideJumpBar();
   if (S.sound !== 'off') playSound(S.sound, S.volume);
   acquireWake();
   if (S.resumeBack && !options.fromSeek) R.pos = Math.max(0, R.pos - S.resumeBack);
@@ -1031,12 +1044,46 @@ function saveProgress(force) {
   R.book.lastReadAt = Date.now();
   db.put('books', R.book).catch(() => {});
 }
-function seek(pos) {
+function seek(pos, { undo = false } = {}) {
+  const from = R.pos;
+  if (R.jump) clearJump();
+  hideJumpBar();
   R.pos = clamp(pos, 0, R.words.length - 1);
   updateMeta();
   renderWord(R.words[R.pos]);
   if (R.state === 'paused') showFlowAt(R.pos, true);
   saveProgress(true);
+  if (undo && Math.abs(R.pos - from) > 200) showJumpBar('undo', from);
+}
+function clearJump() {
+  if (!R) return;
+  R.jump = null;
+  R.scrubbing = false;
+  hideJumpBar();
+  updateMeta();
+}
+function hideJumpBar() {
+  if (R) clearTimeout(R.jumpTimer);
+  const bar = $('#jump-bar');
+  if (bar) bar.hidden = true;
+}
+// 'confirm' asks before a drag on the progress bar moves you; 'undo' offers a way back after a chapter, bookmark, or search jump.
+function showJumpBar(kind, from) {
+  const bar = $('#jump-bar');
+  if (!bar) return;
+  clearTimeout(R.jumpTimer);
+  const total = Math.max(1, R.words.length - 1);
+  const at = kind === 'confirm' ? R.jump.to : R.pos;
+  const chapter = currentChapter(at);
+  const label = `${Math.round((at / total) * 100)}%${chapter ? ` · ${chapter.title}` : ''}`;
+  $('#jump-text').textContent = kind === 'confirm' ? `Jump to ${label}?` : `Jumped to ${label}`;
+  $('#jump-go').textContent = kind === 'confirm' ? 'Jump here' : 'Undo';
+  $('#jump-back').hidden = kind !== 'confirm';
+  bar.dataset.kind = kind;
+  R.undoFrom = from;
+  bar.hidden = false;
+  $('#back-place').hidden = true;
+  if (kind === 'undo') R.jumpTimer = setTimeout(hideJumpBar, 8000);
 }
 function rewindBy(n) {
   seek(R.pos - n);
@@ -1064,17 +1111,34 @@ function bindReader() {
   const scrub = $('#scrub');
   scrub.oninput = () => {
     R.scrubbing = true;
-    R.pos = Number(scrub.value);
+    hideJumpBar();
+    R.jump = { from: R.jump ? R.jump.from : R.pos, to: Number(scrub.value) };
     updateMeta();
   };
   scrub.onchange = () => {
     R.scrubbing = false;
-    seek(Number(scrub.value));
+    if (!R.jump) return;
+    if (R.jump.to === R.jump.from) clearJump();
+    else showJumpBar('confirm', R.jump.from);
   };
+  $('#jump-go').onclick = () => {
+    if ($('#jump-bar').dataset.kind === 'confirm') {
+      const to = R.jump.to;
+      clearJump();
+      seek(to);
+    } else {
+      const back = R.undoFrom;
+      hideJumpBar();
+      seek(back);
+    }
+  };
+  $('#jump-back').onclick = clearJump;
 
   let g = null;
   const isControl = t => t.closest('button, input, .bar, label, select, a, #wpm-pop');
   reader.addEventListener('pointerdown', e => {
+    // A tap anywhere else leaves the pending jump behind and keeps your spot.
+    if (R.jump && !e.target.closest('#jump-bar, #scrub-wrap')) clearJump();
     if (wpmPopOpen() && !e.target.closest('#wpm-pop, #wpm-box')) {
       toggleWpmPop(false);
       if (!e.target.closest('button, input, .bar')) { g = null; return; }
@@ -1216,7 +1280,7 @@ function showToc(tab) {
       <button role="tab" data-t="chapters">Chapters</button><button role="tab" data-t="bookmarks">Bookmarks</button><button role="tab" data-t="search">Search</button>
     </div><div class="sheet-body" id="toc-body"></div>`, { tall: true });
   const body = $('#toc-body', sheet);
-  const go = word => { closeSheet(); seek(word); };
+  const go = word => { closeSheet(); seek(word, { undo: true }); };
   const draw = name => {
     $$('.tabs button', sheet).forEach(b => b.setAttribute('aria-selected', b.dataset.t === name));
     if (name === 'chapters') {
@@ -1291,15 +1355,80 @@ function runSearch(query, out) {
     : `<p class="muted">No results for “${esc(query)}”.</p>`;
 }
 
+/* ---------- Sound tracks ---------- */
+let tracks = [];
+const soundOptions = () => [
+  ['off', 'Off'],
+  ...SOUND_OPTIONS.filter(([k]) => k !== 'off' && !S.hiddenSounds.includes(k)),
+  ...tracks.map(t => [`c:${t.id}`, t.name]),
+];
+const soundLabel = key => soundOptions().find(([k]) => k === key)?.[1] || 'Off';
+// Switches to Off when the chosen track has been removed.
+function fixSound() {
+  if (S.sound === 'off' || soundOptions().some(([k]) => k === S.sound)) return;
+  S.sound = 'off';
+  stopSound();
+  saveSettings();
+}
+const MAX_TRACK_FILE = 60 * 1048576;
+const trackMb = bytes => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)} MB`;
+const trackLength = seconds => {
+  const total = Math.max(1, Math.round(seconds));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+};
+const trackName = fileName => fileName.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ').trim().slice(0, 60) || 'Untitled track';
+
+// Reads each chosen file, checks that it can be played, and keeps it on the device.
+async function addTracks(files) {
+  let added = 0;
+  const notes = [];
+  for (const file of files) {
+    const name = trackName(file.name);
+    if (file.size > MAX_TRACK_FILE) { notes.push(`“${name}” is over ${trackMb(MAX_TRACK_FILE)}`); continue; }
+    toast(`Adding “${name}”`, 20000);
+    try {
+      const data = await file.arrayBuffer();
+      const info = await analyzeTrack(data);
+      if (info.tooLong) {
+        notes.push(`“${name}” is too long to loop, so try one under about ${Math.floor(info.maxSeconds / 60)} minutes`);
+        continue;
+      }
+      const track = { id: uid(), name, size: file.size, duration: info.duration, norm: info.norm, level: 1, addedAt: Date.now() };
+      await db.saveTrack(track, data);
+      tracks.push(track);
+      added++;
+      if (info.decodedBytes > 100 * 1048576) notes.push(`“${name}” is long, so it uses about ${trackMb(info.decodedBytes)} of memory while it plays`);
+    } catch (error) {
+      console.error(error);
+      notes.push(error?.name === 'QuotaExceededError' ? 'There is not enough storage for this file' : `“${name}” could not be read as audio`);
+    }
+  }
+  const summary = [added ? `Added ${added} ${added === 1 ? 'track' : 'tracks'}` : '', ...notes].filter(Boolean).join('. ');
+  toast(`${summary}.`, notes.length ? 6000 : 2600);
+  return added;
+}
+async function removeTrack(key) {
+  if (key.startsWith('c:')) {
+    const id = key.slice(2);
+    await db.deleteTrack(id);
+    tracks = tracks.filter(t => t.id !== id);
+    dropTrack(id);
+  } else if (!S.hiddenSounds.includes(key)) S.hiddenSounds = [...S.hiddenSounds, key];
+  fixSound();
+  saveSettings();
+}
+
 function showSoundSheet() {
   const sheet = openSheet('Ambient sound', `<div class="sheet-body">
-    ${SOUND_OPTIONS.map(([k, label]) => `<button class="menu-btn" data-s="${k}" ${S.sound === k ? 'style="color:var(--hi);font-weight:600"' : ''}>${label}</button>`).join('')}
+    ${soundOptions().map(([k, label]) => `<button class="menu-btn" data-s="${k}" ${S.sound === k ? 'style="color:var(--hi);font-weight:600"' : ''}>${esc(label)}</button>`).join('')}
+    <button class="menu-btn" data-manage>Add or remove tracks</button>
     <div class="set-row"><div class="set-line"><label for="vol">Volume</label><span class="set-value" id="vol-v">${pct(S.volume)}</span></div>
     <input id="vol" type="range" min="0" max="1" step="0.05" value="${S.volume}"></div>
     <p class="muted">Sounds may stop when you lock your phone or leave the app.</p></div>`, {
     onClose: () => { if (!R || (R.state === 'paused' && S.soundMode !== 'reader')) stopSound(); },
   });
   sheet.onclick = e => {
+    if (e.target.closest('[data-manage]')) { showSettings('Ambient sound'); return; }
     const choice = e.target.closest('[data-s]');
     if (!choice) return;
     S.sound = choice.dataset.s;
@@ -1316,7 +1445,7 @@ function showSoundSheet() {
 }
 
 /* ---------- Settings screen ---------- */
-function showSettings() {
+function showSettings(startPage = null) {
   const valueText = c => {
     const v = S[c.k];
     if (c.format) return c.format(v);
@@ -1336,6 +1465,7 @@ function showSettings() {
         <input type="text" data-hex="${k}" value="${S[k]}" maxlength="7" autocapitalize="none" autocorrect="off" spellcheck="false" aria-label="${label} hex code"></span></div></div>`;
       return `<div class="custom-rows" ${S.theme === 'custom' ? '' : 'hidden'}>${row('customBg', 'Custom background')}${row('customInk', 'Custom text')}${row('customHi', 'Custom highlight')}</div>`;
     }
+    if (c.type === 'tracks') return tracksPanel();
     const help = c.help ? `<small class="set-help">${esc(c.help)}</small>` : '';
     if (c.type === 'toggle') {
       return `<div class="set-row"><div class="set-line"><label for="s-${c.k}">${esc(c.label)}${help}</label>
@@ -1348,6 +1478,31 @@ function showSettings() {
     return `<div class="set-row"><div class="set-line"><label for="s-${c.k}">${esc(c.label)}${help}</label><span class="set-value" data-v="${c.k}">${valueText(c)}</span></div>
       <input id="s-${c.k}" type="range" data-k="${c.k}" data-num min="${c.min}" max="${c.max}" step="${c.step}" value="${S[c.k]}"></div>`;
   };
+  let removing = null;
+  const tracksPanel = () => {
+    const row = ([key, label]) => {
+      const custom = key.startsWith('c:');
+      const meta = custom ? tracks.find(t => t.id === key.slice(2)) : null;
+      const detail = key === 'off' ? 'No sound' : meta ? `${trackLength(meta.duration)} · ${trackMb(meta.size)}` : 'Built in';
+      const trash = key === 'off' ? '' : removing === key
+        ? `<span class="track-ask"><button class="secondary" data-remove="${esc(key)}">Remove</button><button class="secondary" data-keep>Keep</button></span>`
+        : `<button class="icon-btn" data-ask="${esc(key)}" aria-label="Remove ${esc(label)}">${icon('trash')}</button>`;
+      return `<div class="track-row"><button class="track-pick" data-pick="${esc(key)}" aria-pressed="${S.sound === key}"><b>${esc(label)}</b><small>${detail}</small></button>${trash}</div>`;
+    };
+    const current = S.sound.startsWith('c:') ? tracks.find(t => t.id === S.sound.slice(2)) : null;
+    const level = current ? `<div class="set-row"><div class="set-line"><label for="track-level">Level for this track</label><span class="set-value" id="track-level-v">${pct(current.level)}</span></div>
+      <input id="track-level" type="range" data-level="${current.id}" min="0.25" max="2" step="0.05" value="${current.level}"></div>` : '';
+    return `<div class="set-row"><div class="set-line"><span class="set-label">Tracks<small class="set-help">Tap a track to choose it and hear it. Your own files loop over and over.</small></span></div>
+      <div class="track-list">${soundOptions().map(row).join('')}</div></div>${level}
+      <label class="menu-btn" for="add-track" style="cursor:pointer">Add audio files<small>MP3, M4A, WAV, or AAC. They stay on this device, and loud ones are evened out.</small></label>
+      <input id="add-track" type="file" multiple accept="audio/*,.mp3,.m4a,.aac,.wav,.caf" style="position:absolute;opacity:0;width:1px;height:1px">
+      <button class="menu-btn" data-a="restore-sounds">Restore built-in tracks<small>${S.hiddenSounds.length ? `Brings back ${S.hiddenSounds.length} you removed. Your own files stay.` : 'None are removed. Your own files stay either way.'}</small></button>`;
+  };
+  const redrawPage = () => {
+    const top = body.scrollTop;
+    body.innerHTML = SETTINGS.find(([n]) => n === currentPage)[1].map(control).join('');
+    body.scrollTop = top;
+  };
   const all = SETTINGS.flatMap(([, list]) => list);
   const fontName = k => FONTS[k]?.[0] || '';
   const SUMMARY = {
@@ -1356,7 +1511,7 @@ function showSettings() {
     'Scrolling text': () => `${fontName(S.textFont)}, ${S.textSize} pt`,
     Speed: () => `${S.countdown} s countdown, ${S.wpm} WPM for new books`,
     Pacing: () => (S.smartPacing ? 'Natural pauses on' : 'Natural pauses off'),
-    'Ambient sound': () => SOUND_OPTIONS.find(([k]) => k === S.sound)?.[1] || 'Off',
+    'Ambient sound': () => soundLabel(S.sound),
     'Reading goal': () => `${S.dailyGoal} min a day`,
     Controls: () => (S.holdMode ? 'Hold to read' : 'Tap to play, swipe for speed'),
     'Library and data': () => 'Backup, restore, and storage',
@@ -1366,11 +1521,17 @@ function showSettings() {
     <button class="menu-btn" data-a="backup">Save a backup<small>Includes your books, progress, bookmarks, stats, and settings</small></button>
     <label class="menu-btn" for="restore" style="cursor:pointer">Restore from a backup<small>Adds its books and replaces your settings</small></label>
     <input id="restore" type="file" accept=".zip,application/zip" style="position:absolute;opacity:0;width:1px;height:1px">
+    <div class="set-row"><div class="set-line"><label for="s-backupTracks">Include your audio files in backups<small class="set-help">${tracks.length ? `Your files take about ${trackMb(tracks.reduce((n, t) => n + t.size, 0))}, which makes backups larger.` : 'Applies to audio files you add.'}</small></label>
+      <input class="switch" type="checkbox" role="switch" id="s-backupTracks" data-k="backupTracks" ${S.backupTracks ? 'checked' : ''}></div></div>
     <div class="menu-btn" id="storage-info"><span>Storage</span><small>Checking</small></div>
     <button class="menu-btn" data-a="reset">Reset settings to defaults</button>
     <button class="menu-btn danger" data-a="clear-stats">Clear reading stats</button>`;
   const pageNames = [...SETTINGS.map(([name]) => name), 'Library and data'];
-  const sheet = openSheet('Settings', `<div id="set-preview"></div><div class="sheet-body" id="set-body"></div>`, { tall: true });
+  let previewedSound = false;
+  const sheet = openSheet('Settings', `<div id="set-preview"></div><div class="sheet-body" id="set-body"></div>`, {
+    tall: true,
+    onClose: () => { if (previewedSound && (!R || (R.state === 'paused' && S.soundMode !== 'reader'))) stopSound(); },
+  });
   const head = $('.sheet-head', sheet);
   const heading = $('h2', head);
   head.insertAdjacentHTML('afterbegin', `<button class="icon-btn set-back" id="set-back" aria-label="Back to settings" hidden>${icon('back')}</button>`);
@@ -1423,10 +1584,18 @@ function showSettings() {
     preview();
     slide(direction);
   };
-  showPage(null, 'none');
+  showPage(startPage, 'none');
 
   sheet.addEventListener('input', e => {
     const t = e.target;
+    if (t.dataset.level) {
+      const track = tracks.find(x => x.id === t.dataset.level);
+      if (!track) return;
+      track.level = Number(t.value);
+      $('#track-level-v', sheet).textContent = pct(track.level);
+      setTrackLevel(`c:${track.id}`, track.level);
+      return;
+    }
     if (t.dataset.k) {
       const k = t.dataset.k;
       S[k] = t.type === 'checkbox' ? t.checked : (t.dataset.num !== undefined ? Number(t.value) : t.value);
@@ -1459,6 +1628,15 @@ function showSettings() {
   });
   sheet.addEventListener('change', e => {
     if (e.target.id === 'restore' && e.target.files[0]) importBackup(e.target.files[0]);
+    if (e.target.dataset.level) {
+      const track = tracks.find(x => x.id === e.target.dataset.level);
+      if (track) db.put('tracks', track).catch(() => {});
+    }
+    if (e.target.id === 'add-track' && e.target.files.length) {
+      const files = [...e.target.files];
+      e.target.value = '';
+      addTracks(files).then(() => { if (currentPage === 'Ambient sound') redrawPage(); });
+    }
   });
   sheet.addEventListener('click', e => {
     const nav = e.target.closest('[data-page]');
@@ -1474,7 +1652,39 @@ function showSettings() {
       saveSettings();
       return;
     }
+    const pickBtn = e.target.closest('[data-pick]');
+    if (pickBtn) {
+      S.sound = pickBtn.dataset.pick;
+      previewedSound = true;
+      saveSettings();
+      playSound(S.sound, S.volume);
+      removing = null;
+      redrawPage();
+      return;
+    }
+    const ask = e.target.closest('[data-ask]');
+    if (ask) {
+      const key = ask.dataset.ask;
+      if (key.startsWith('c:')) { removing = key; redrawPage(); return; }
+      removeTrack(key).then(() => { toast('Track removed. You can bring it back below.'); redrawPage(); });
+      return;
+    }
+    if (e.target.closest('[data-keep]')) { removing = null; redrawPage(); return; }
+    const gone = e.target.closest('[data-remove]');
+    if (gone) {
+      removing = null;
+      removeTrack(gone.dataset.remove).then(() => { toast('Track removed'); redrawPage(); });
+      return;
+    }
     const action = e.target.closest('[data-a]')?.dataset.a;
+    if (action === 'restore-sounds') {
+      if (!S.hiddenSounds.length) { toast('All built-in tracks are already here.'); return; }
+      S.hiddenSounds = [];
+      saveSettings();
+      redrawPage();
+      toast('Built-in tracks restored');
+      return;
+    }
     if (action === 'backup') exportBackup();
     if (action === 'reset') {
       confirmSheet('Reset settings?', 'Your books, progress, and stats will stay as they are.', 'Reset settings', () => {
@@ -1507,8 +1717,14 @@ async function exportBackup() {
   toast('Preparing your backup', 8000);
   const zip = new window.JSZip();
   const [books, contents, sessions] = await Promise.all([db.getAll('books'), db.getAll('contents'), db.getAll('sessions')]);
-  zip.file('stillpoint.json', JSON.stringify({ app: 'stillpoint', version: 1, createdAt: Date.now(), settings: S, books, sessions }));
+  const kept = S.backupTracks ? tracks : [];
+  zip.file('stillpoint.json', JSON.stringify({ app: 'stillpoint', version: 1, createdAt: Date.now(), settings: S, books, sessions, tracks: kept }));
   contents.forEach(c => zip.file(`books/${c.id}.json`, JSON.stringify(c)));
+  for (const track of kept) {
+    const record = await db.get('trackdata', track.id);
+    // Audio is already compressed, so it is stored as it is.
+    if (record) zip.file(`tracks/${track.id}.bin`, record.data, { compression: 'STORE' });
+  }
   const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
   const name = `stillpoint-backup-${new Date().toISOString().slice(0, 10)}.zip`;
   const file = new File([blob], name, { type: 'application/zip' });
@@ -1549,13 +1765,27 @@ async function importBackup(file) {
       const { id, ...rest } = session;
       if (!existing.has(`${rest.bookId}|${rest.at}`)) await db.put('sessions', rest);
     }
+    let restoredTracks = 0;
+    for (const t of data.tracks || []) {
+      if (typeof t?.id !== 'string' || !/^[\w-]+$/.test(t.id) || tracks.some(x => x.id === t.id)) continue;
+      const audio = zip.file(`tracks/${t.id}.bin`);
+      if (!audio) continue;
+      const track = {
+        id: t.id, name: String(t.name || 'Untitled track').slice(0, 60), size: Number(t.size) || 0, duration: Number(t.duration) || 0,
+        norm: clamp(Number(t.norm) || 1, 0.1, 8), level: clamp(Number(t.level) || 1, 0.25, 2), addedAt: Number(t.addedAt) || Date.now(),
+      };
+      await db.saveTrack(track, await audio.async('arraybuffer'));
+      tracks.push(track);
+      restoredTracks++;
+    }
     if (data.settings) {
       S = { ...DEFAULTS, ...data.settings };
       applySettings();
       saveSettings();
     }
+    fixSound();
     closeSheet();
-    toast(`Restored ${restored} ${restored === 1 ? 'book' : 'books'}`);
+    toast(`Restored ${restored} ${restored === 1 ? 'book' : 'books'}${restoredTracks ? ` and ${restoredTracks} ${restoredTracks === 1 ? 'track' : 'tracks'}` : ''}`);
     if (!R) showLibrary();
   } catch (error) {
     console.error(error);
@@ -1821,6 +2051,13 @@ async function boot() {
   // Moves anyone still on the old off-center default to the new centered one.
   if (saved && !saved.settingsVersion && saved.pivotX === 40) S.pivotX = 50;
   S.settingsVersion = 2;
+  tracks = (await db.getAll('tracks').catch(() => [])).sort((a, b) => a.addedAt - b.addedAt);
+  setTrackSource(async id => {
+    const [record, meta] = [await db.get('trackdata', id), tracks.find(t => t.id === id)];
+    if (!record || !meta) throw new Error('missing track');
+    return { data: record.data, norm: meta.norm, level: meta.level };
+  }, () => toast('This track could not be played.'));
+  fixSound();
   applySettings();
   navigator.storage?.persist?.().catch(() => {});
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {

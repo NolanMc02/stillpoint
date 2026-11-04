@@ -170,14 +170,51 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   ok('search result jumps to the phrase', (await sp(() => __stillpoint.R.words[__stillpoint.R.pos])).startsWith('pale'), await sp(() => __stillpoint.R.words[__stillpoint.R.pos]));
 
   // Scrubber and far-scroll windowing
-  await sp(() => { const s = document.querySelector('#scrub'); s.value = 50; s.dispatchEvent(new Event('input')); s.dispatchEvent(new Event('change')); });
-  await sleep(500);
-  ok('progress bar moves position', (await sp(() => __stillpoint.R.pos)) === 50);
+  const dragScrub = v => page.evaluate(n => { const s = document.querySelector('#scrub'); s.value = n; s.dispatchEvent(new Event('input')); s.dispatchEvent(new Event('change')); }, v);
+  const spot = await sp(() => __stillpoint.R.pos);
+  await dragScrub(50);
+  await sleep(300);
+  ok('progress bar asks before moving', (await sp(() => __stillpoint.R.pos)) === spot && !(await sp(() => document.querySelector('#jump-bar').hidden)));
+  await page.tap('#jump-back'); await sleep(200);
+  ok('back to my spot keeps your place', (await sp(() => __stillpoint.R.pos)) === spot && (await sp(() => __stillpoint.R.book.pos)) === spot && await sp(() => document.querySelector('#jump-bar').hidden));
+  await dragScrub(50);
+  await sleep(200);
+  await page.tap('#jump-go'); await sleep(500);
+  ok('jump here moves position', (await sp(() => __stillpoint.R.pos)) === 50);
   await page.evaluate(() => { document.querySelector('#flow').scrollTop += 3000; });
   await sleep(200);
   ok('back to my place appears after scrolling away', !(await sp(() => document.querySelector('#back-place').hidden)));
   await page.tap('#back-place'); await sleep(200);
   ok('back to my place returns', await sp(() => document.querySelector('#back-place').hidden));
+
+  // Focus mark distance
+  const tickGap = () => sp(() => { const r = document.querySelector('#rail').getBoundingClientRect(); return r.top - document.querySelector('#tick-a').getBoundingClientRect().top; });
+  const gapNormal = await tickGap();
+  await sp(() => document.documentElement.style.setProperty('--guide-dist', 2));
+  const gapWide = await tickGap();
+  await sp(() => document.documentElement.style.setProperty('--guide-dist', 1));
+  ok('focus marks can sit twice as far away', Math.abs(gapWide / gapNormal - 2) < 0.1, `${Math.round(gapNormal)} px to ${Math.round(gapWide)} px`);
+
+  // Custom audio tracks
+  const wav = Buffer.alloc(44 + 22050 * 2);
+  wav.write('RIFF', 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVEfmt ', 8); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(22050, 24); wav.writeUInt32LE(44100, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(22050 * 2, 40);
+  for (let i = 0; i < 22050; i++) wav.writeInt16LE(Math.round(Math.sin(i / 8) * 9000), 44 + i * 2);
+  await page.tap('#r-settings'); await page.waitForSelector('.set-nav');
+  await page.tap('[data-page="Ambient sound"]'); await page.waitForSelector('#add-track', { state: 'attached' });
+  await page.setInputFiles('#add-track', [{ name: 'tone.wav', mimeType: 'audio/wav', buffer: wav }, { name: 'bad.mp3', mimeType: 'audio/mpeg', buffer: Buffer.alloc(3000) }]);
+  await page.waitForSelector('[data-pick^="c:"]', { timeout: 8000 });
+  ok('an audio file can be added, and a broken one is refused', (await page.$$('[data-pick^="c:"]')).length === 1 && /could not be read/.test(await page.textContent('#toast')));
+  await page.tap('[data-pick^="c:"]'); await sleep(500);
+  ok('your track can be chosen', (await sp(() => __stillpoint.S.sound.startsWith('c:'))) && !!(await page.$('#track-level')));
+  await page.tap('[data-ask="rain"]'); await sleep(200);
+  ok('a built-in track can be removed', !(await page.$('[data-pick=rain]')));
+  await page.tap('[data-a=restore-sounds]'); await sleep(200);
+  ok('restore brings back built-ins and keeps yours', !!(await page.$('[data-pick=rain]')) && !!(await page.$('[data-pick^="c:"]')));
+  await page.tap('[data-ask^="c:"]'); await page.tap('[data-remove]'); await sleep(500);
+  ok('your track can be removed', !(await page.$('[data-pick^="c:"]')) && (await sp(() => __stillpoint.S.sound)) === 'off');
+  await page.click('[data-close]').catch(() => {});
+  await sleep(300);
 
   // Long press
   const wEl = await page.$('.w.cur');
@@ -248,7 +285,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   ok('hex colors apply', await sp(() => __stillpoint.S.theme === 'custom' && __stillpoint.S.customHi === '#00ff88'));
   await page.tap('[data-theme-pick=tide]'); await sleep(450);
   await setBack();
-  for (const [name, id] of [['Scrolling text', '#s-textFont'], ['Speed', '#s-wpm'], ['Pacing', '#s-commaPause'], ['Ambient sound', '#s-sound'], ['Reading goal', '#s-dailyGoal'], ['Controls', '#s-holdMode'], ['Library and data', '[data-a=backup]']]) {
+  for (const [name, id] of [['Scrolling text', '#s-textFont'], ['Speed', '#s-wpm'], ['Pacing', '#s-commaPause'], ['Ambient sound', '.track-list'], ['Reading goal', '#s-dailyGoal'], ['Controls', '#s-holdMode'], ['Library and data', '[data-a=backup]']]) {
     await setPage(name);
     ok(`${name} page opens`, !!(await page.$(id)));
     await setBack();

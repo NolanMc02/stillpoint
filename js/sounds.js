@@ -1,5 +1,14 @@
-// Ambient sounds, generated on the device so they work offline.
+// Ambient sounds: built-in ones are generated on the device, and your own files loop in place of them.
 let ctx, master, current, birdTimer;
+let trackLoader, trackFailed, cachedTrack;
+const TARGET_RMS = 0.1;
+const MAX_DECODED_BYTES = 200 * 1048576;
+
+// The app supplies how to read an uploaded track: id => Promise<{ data, norm, level }>.
+export function setTrackSource(loader, onFail) {
+  trackLoader = loader;
+  trackFailed = onFail;
+}
 
 function noiseBuffer(kind, seconds = 6) {
   const length = ctx.sampleRate * seconds;
@@ -144,6 +153,97 @@ export function unlockAudio() {
   if (ctx.state !== 'running') ctx.resume().catch(() => {});
 }
 
+const decode = data => new Promise((resolve, reject) => {
+  // Older iOS only takes callbacks, newer returns a promise too, so the extra one must not go unhandled.
+  const result = ctx.decodeAudioData(data, resolve, reject);
+  result?.catch?.(() => {});
+});
+
+// Reads a new file once to find its length and how loud it is, so tracks sit at a similar level.
+export async function analyzeTrack(data) {
+  unlockAudio();
+  if (!ctx) throw new Error('no audio');
+  const buffer = await decode(data.slice(0));
+  const decodedBytes = buffer.length * buffer.numberOfChannels * 4;
+  if (decodedBytes > MAX_DECODED_BYTES) return { tooLong: true, duration: buffer.duration, decodedBytes, maxSeconds: buffer.duration * MAX_DECODED_BYTES / decodedBytes };
+  let sum = 0; let peak = 0;
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const d = buffer.getChannelData(c);
+    for (let i = 0; i < d.length; i++) {
+      const v = d[i];
+      sum += v * v;
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+    }
+  }
+  const rms = Math.sqrt(sum / (buffer.length * buffer.numberOfChannels)) || 0.0001;
+  const norm = Math.min(Math.max(TARGET_RMS / rms, 0.25), 4, peak ? 0.95 / peak : 4);
+  return { duration: buffer.duration, norm, decodedBytes };
+}
+
+// Blends the end of the file into its start, so the loop has no gap or click.
+function loopable(buffer) {
+  const rate = buffer.sampleRate;
+  const length = buffer.length;
+  const fade = buffer.duration < 1 ? 0 : Math.min(Math.floor(rate * 1.5), Math.floor(length * 0.2));
+  if (!fade) return { buffer, loopEnd: buffer.duration };
+  const out = ctx.createBuffer(buffer.numberOfChannels, length, rate);
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const src = buffer.getChannelData(c);
+    const d = out.getChannelData(c);
+    d.set(src);
+    for (let i = 0; i < fade; i++) {
+      const t = (i / fade) * Math.PI / 2;
+      d[i] = src[i] * Math.sin(t) + src[length - fade + i] * Math.cos(t);
+    }
+  }
+  return { buffer: out, loopEnd: (length - fade) / rate };
+}
+
+async function startTrack(mine, id) {
+  try {
+    const record = await trackLoader(id);
+    if (current !== mine) return;
+    if (cachedTrack?.id !== id) {
+      cachedTrack = null;
+      const looped = loopable(await decode(record.data.slice(0)));
+      cachedTrack = { id, ...looped };
+    }
+    if (current !== mine) return;
+    const src = ctx.createBufferSource();
+    src.buffer = cachedTrack.buffer;
+    src.loop = true;
+    src.loopEnd = cachedTrack.loopEnd;
+    const trim = ctx.createGain();
+    mine.norm = record.norm;
+    mine.level = record.level;
+    trim.gain.value = mine.norm * mine.level;
+    mine.trim = trim;
+    src.connect(trim).connect(mine.bus);
+    src.start();
+    mine.nodes.push(src);
+  } catch (error) {
+    console.error(error);
+    if (current === mine) {
+      current = null;
+      mine.bus.disconnect();
+    }
+    trackFailed?.(id);
+  }
+}
+
+// Forgets the decoded copy of a removed track.
+export function dropTrack(id) {
+  if (cachedTrack?.id === id) cachedTrack = null;
+}
+
+// Changes how loud one of your tracks plays, on top of the matching done when it was added.
+export function setTrackLevel(name, level) {
+  if (current?.name !== name || !current.trim) return;
+  current.level = level;
+  current.trim.gain.value = current.norm * level;
+}
+
 export function stopSound() {
   clearTimeout(birdTimer);
   if (!current) return;
@@ -165,13 +265,15 @@ export function playSound(name, volume) {
   setVolume(volume);
   if (current?.name === name) return;
   stopSound();
-  if (name === 'off' || !SCENES[name]) return;
+  const custom = name.startsWith('c:');
+  if (name === 'off' || (!custom && !SCENES[name]) || (custom && !trackLoader)) return;
   const bus = ctx.createGain();
   bus.gain.setValueAtTime(0, ctx.currentTime);
   bus.gain.linearRampToValueAtTime(1, ctx.currentTime + 0.8);
   bus.connect(master);
   current = { name, bus, nodes: [] };
-  SCENES[name]();
+  if (custom) startTrack(current, name.slice(2));
+  else SCENES[name]();
 }
 
 export function setVolume(volume) {
