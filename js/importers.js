@@ -2,6 +2,7 @@
 // Blocks are {k:'p'|'h'|'q', t:text}. Chapters are {title, block, depth}.
 import { normalizeText } from './engine.js';
 import { analyzePages, buildBlocks } from './pdfclean.js';
+import { cleanBook, defaultBookOptions } from './bookclean.js';
 
 export class ImportError extends Error {}
 
@@ -16,7 +17,7 @@ const baseTitle = name => name.replace(/\.[a-z0-9]+$/i, '').replace(/[_]+/g, ' '
 const tagOf = el => (el.localName || el.nodeName || '').toLowerCase().replace(/^.*:/, '');
 
 function epubType(el) {
-  return el.getAttribute('epub:type') || el.getAttributeNS?.('http://www.idpf.org/2007/ops', 'type') || el.getAttribute('role') || '';
+  return `${el.getAttribute('epub:type') || el.getAttributeNS?.('http://www.idpf.org/2007/ops', 'type') || ''} ${el.getAttribute('role') || ''}`.trim();
 }
 
 function parseMarkup(text, preferXml = false) {
@@ -28,13 +29,27 @@ function parseMarkup(text, preferXml = false) {
 }
 
 // Walks a document and adds readable blocks. Records where each element id starts.
-export function appendDocument(doc, blocks, anchors = null) {
+export function appendDocument(doc, blocks, anchors = null, context = null) {
   let buffer = '';
   let quoteDepth = 0;
+  let roles = context?.roles || [];
+  let section = '';
+  const classify = node => {
+    const type = epubType(node);
+    const cls = node.getAttribute('class') || '';
+    const id = node.getAttribute('id') || '';
+    if (/\bpg-boilerplate\b/.test(cls) || /^pg-(header|footer)$/.test(id)) return 'boilerplate';
+    if (NOTE_TYPES.test(type) || /doc-(footnote|endnote)/.test(type) || /\b(?:footnote|footnotes|endnotes|rearnotes)\b/.test(cls)) return 'note';
+    if (['figure', 'figcaption'].includes(tagOf(node)) || /\bfigure\b/.test(type) || /\b(?:caption|figcaption|figcenter)\b/.test(cls)) return 'figure';
+    if (/\b(?:cover|titlepage|copyright-page|dedication|frontmatter|toc)\b/.test(type)) return 'frontmatter';
+    if (/\b(?:backmatter|bibliography|index|advertisements|colophon)\b/.test(type)) return 'backmatter';
+    return null;
+  };
   const flush = (kind = quoteDepth ? 'q' : 'p') => {
     const text = normalizeText(buffer);
     buffer = '';
-    if (text && /[\p{L}\p{N}]/u.test(text)) blocks.push({ k: kind, t: text });
+    if (text && /[\p{L}\p{N}]/u.test(text)) blocks.push({ k: kind, t: text,
+      ...(context ? { roles: [...roles], section, document: context.document, location: context.location || context.document } : {}) });
   };
   const visit = node => {
     if (node.nodeType === 3) { buffer += node.nodeValue; return; }
@@ -42,17 +57,39 @@ export function appendDocument(doc, blocks, anchors = null) {
     const tag = tagOf(node);
     if (SKIP_TAGS.has(tag)) return;
     const type = epubType(node);
-    if (NOTE_TYPES.test(type) || /doc-(footnote|endnote|noteref)/.test(type) || /\bnoteref\b/.test(type)) return;
-    if (tag === 'sup' && (node.querySelector?.('a') || /^\s*[\d*†‡]+\s*$/.test(node.textContent))) return;
+    if (/\b(?:noteref|doc-noteref|doc-backlink|pagebreak|doc-pagebreak)\b/.test(type)) return;
+    if (!context && (NOTE_TYPES.test(type) || /doc-(footnote|endnote)/.test(type))) return;
+    if (node.hasAttribute('hidden') || node.getAttribute('aria-hidden') === 'true' || /display\s*:\s*none\b/i.test(node.getAttribute('style') || '')) return;
+    if (tag === 'a' && /\b(?:fnanchor|footnote-ref)\b/.test(node.getAttribute('class') || '')) return;
+    if (tag === 'sup' && (node.querySelector?.('a') || !context && /^\s*[\d*†‡]+\s*$/.test(node.textContent))) return;
     if (tag === 'nav' && /\b(toc|landmarks|page-list)\b/.test(type)) return;
+    const role = context && classify(node);
+    const oldRoles = roles, oldSection = section;
+    const structural = type.split(/\s+/).find(t => /^(chapter|subchapter|part|volume|book|preface|introduction|epigraph)$/.test(t));
+    const boundary = role && !roles.includes(role) || structural;
+    if (boundary) flush();
+    if (role && !roles.includes(role)) roles = [...roles, role];
+    if (structural) section = structural;
     const id = node.getAttribute('id') || (tag === 'a' ? node.getAttribute('name') : null);
     if (anchors && id) anchors.set(id, blocks.length + (normalizeText(buffer) ? 1 : 0));
     if (tag === 'br') { buffer += ' '; return; }
-    if (tag === 'img') { const alt = node.getAttribute('alt'); if (alt && alt.length > 40) buffer += ` ${alt} `; return; }
+    if (tag === 'img') {
+      const alt = node.getAttribute('alt');
+      if (context) {
+        // Prefer the actual caption over a duplicate image description.
+        const figure = node.closest('figure, [role="figure"], .figcenter');
+        if (alt && (!roles.includes('figure') || !figure?.textContent.trim())) {
+          flush(); const prior = roles; roles = [...new Set([...roles, 'figure'])]; buffer = alt; flush(); roles = prior;
+        }
+      } else if (alt && alt.length > 40) buffer += ` ${alt} `;
+      roles = oldRoles; section = oldSection;
+      return;
+    }
     if (/^h[1-6]$/.test(tag)) {
       flush();
       for (const child of node.childNodes) visit(child);
       flush('h');
+      roles = oldRoles; section = oldSection;
       return;
     }
     if (BLOCK_TAGS.has(tag)) {
@@ -62,9 +99,12 @@ export function appendDocument(doc, blocks, anchors = null) {
       for (const child of node.childNodes) visit(child);
       flush();
       if (quote) quoteDepth--;
+      roles = oldRoles; section = oldSection;
       return;
     }
     for (const child of node.childNodes) visit(child);
+    if (boundary) flush();
+    roles = oldRoles; section = oldSection;
   };
   visit(doc.body || doc.documentElement);
   flush();
@@ -273,6 +313,9 @@ async function epubToBook(buffer, fallback) {
   const opfPath = containerDoc.getElementsByTagNameNS('*', 'rootfile')[0]?.getAttribute('full-path');
   if (!opfPath || !zipFile(zip, opfPath)) throw new ImportError('This EPUB is missing its book description, so it cannot be opened.');
   const opf = new DOMParser().parseFromString(await zipFile(zip, opfPath).async('string'), 'application/xml');
+  if ([...opf.getElementsByTagNameNS('*', 'meta')].some(m => m.getAttribute('property') === 'rendition:layout' && m.textContent.trim() === 'pre-paginated')) {
+    throw new ImportError('This is a fixed-layout EPUB. Use a reflowable EPUB or a text PDF for RSVP reading.');
+  }
 
   const manifest = new Map();
   let navHref = null;
@@ -285,7 +328,7 @@ async function epubToBook(buffer, fallback) {
   const ncxHref = manifest.get(spineEl?.getAttribute('toc'))?.href
     || [...manifest.values()].find(m => m.type.includes('dtbncx'))?.href;
   const spine = [...opf.getElementsByTagNameNS('*', 'itemref')]
-    .map(r => manifest.get(r.getAttribute('idref'))).filter(Boolean);
+    .map(r => ({ ...manifest.get(r.getAttribute('idref')), auxiliary: r.getAttribute('linear') === 'no' })).filter(e => e.href);
 
   const blocks = [];
   const fileStart = new Map();
@@ -296,7 +339,10 @@ async function epubToBook(buffer, fallback) {
     if (entry.href === navHref) continue;
     fileStart.set(entry.href, blocks.length);
     const local = new Map();
-    appendDocument(parseMarkup(await file.async('string'), true), blocks, local);
+    const doc = parseMarkup(await file.async('string'), true);
+    appendDocument(doc, blocks, local, { document: entry.href,
+      location: doc.querySelector('title')?.textContent?.trim() || `Section ${fileStart.size}`,
+      roles: entry.auxiliary || /(?:^|\/)(?:cover|titlepage|copyright)(?:\.|\/)/i.test(entry.href) ? ['frontmatter'] : [] });
     local.forEach((block, id) => anchors.set(`${entry.href}#${id}`, block));
   }
 
@@ -349,7 +395,16 @@ async function epubToBook(buffer, fallback) {
   if (!chapters.length) chapters = chaptersFromHeadings(blocks);
 
   const meta = name => opf.getElementsByTagNameNS('*', name)[0]?.textContent?.trim() || '';
-  return { title: meta('title') || fallback, author: meta('creator'), format: 'epub', blocks, chapters };
+  const firstChapter = chapters.find(c => blocks[c.block]?.section === 'chapter' || /^chapter\s+/i.test(c.title)) || chapters[0];
+  let advertising = false;
+  blocks.forEach((b, i) => {
+    if (i < (firstChapter?.block || 0) && !/^(preface|introduction|epigraph|part|volume|book)$/.test(b.section)) b.roles = [...new Set([...b.roles, 'frontmatter'])];
+    if (b.k === 'h' && /books you like to read|^advertisements$/i.test(b.t)) advertising = true;
+    if (advertising && !b.roles.includes('note')) b.roles = [...new Set([...b.roles, 'backmatter'])];
+    if (/^\*\*\*\s*(?:START|END) OF (?:THE|THIS) PROJECT GUTENBERG EBOOK/i.test(b.t)) b.roles = [...new Set([...b.roles, 'boilerplate'])];
+    b.sid = `epub:${i}`; b.order = i;
+  });
+  return cleanBook({ title: meta('title') || fallback, author: meta('creator'), format: 'epub', blocks, chapters }, defaultBookOptions());
 }
 
 async function docxToBook(buffer, fallback) {
@@ -512,19 +567,28 @@ async function extractPdf(buffer, fallback, onProgress) {
       const x = item.transform[4];
       const y = item.transform[5];
       const h = Math.abs(item.height) || Math.hypot(item.transform[2], item.transform[3]);
-      if (current && Math.abs(current.y - y) <= Math.max(current.h, h, 1) * 0.55) {
+      if (current && Math.abs(current.y - y) <= Math.max(Math.min(current.h, h), 1) * 0.55) {
         const gap = x - current.endX;
         const needsSpace = gap > Math.max(h, 1) * 0.12 && !/\s$/.test(current.text) && !/^\s/.test(item.str);
         current.text += (needsSpace ? ' ' : '') + item.str;
         current.endX = x + item.width;
         current.h = Math.max(current.h, h);
+        current.sizes.push([h, item.str.length]);
       } else if (item.str.trim()) {
-        current = { text: item.str, x, y, h, endX: x + item.width };
+        current = { text: item.str, x, y, h, endX: x + item.width, sizes: [[h, item.str.length]] };
         lines.push(current);
       }
     }
-    lines.forEach(l => { l.text = l.text.replace(/\s+/g, ' ').trim(); characters += l.text.length; });
-    pages.push({ n, lines: lines.filter(l => l.text).map(({ text, x, y, h }) => ({ text, x, y, h })) });
+    lines.forEach(l => {
+      // A single large initial must not set the height of a whole prose line.
+      const sizes = l.sizes.sort((a, b) => a[0] - b[0]);
+      let weight = sizes.reduce((sum, s) => sum + s[1], 0) / 2;
+      for (const [size, count] of sizes) { weight -= count; if (weight <= 0) { l.h = size; break; } }
+      l.text = l.text.replace(/\s+/g, ' ').trim(); characters += l.text.length;
+    });
+    const viewport = page.getViewport({ scale: 1 });
+    pages.push({ n, height: viewport.height, width: viewport.width,
+      lines: lines.filter(l => l.text).map(({ text, x, y, h, endX }) => ({ text, x, y, h, endX })) });
     page.cleanup();
     onProgress?.(`Reading page ${n} of ${pdf.numPages}`);
   }
@@ -561,23 +625,65 @@ async function extractPdf(buffer, fallback, onProgress) {
 
 // Builds the final PDF book from the choices made on the review screen.
 export function finishPdf(extracted, options) {
-  const { blocks, pageBlock, headingBlocks } = buildBlocks(extracted.analysis, options);
+  const { blocks, pageBlock, headingBlocks } = buildBlocks(extracted.analysis, {
+    ...options, headers: false, numbers: false, footnotes: false, skip: new Set(),
+  });
+  blocks.forEach((b, i) => {
+    b.sid = `pdf:${i}`; b.order = i;
+    if (options.skip.has(b.page)) b.roles.push('page');
+    let priorIndex = i - 1;
+    while (priorIndex >= 0 && blocks[priorIndex].roles.some(r => r !== 'page')) priorIndex--;
+    const prior = blocks[priorIndex];
+    if (options.hyphens && b.continues && prior && !options.skip.has(b.page) && !options.skip.has(prior.page)
+      && /\p{L}-$/u.test(prior.t) && /^\p{Ll}/u.test(b.t)) {
+      const word = b.t.match(/^\S+/)[0];
+      prior.t = prior.t.slice(0, -1) + word;
+      b.t = b.t.slice(word.length).trim();
+    }
+  });
+  const contentsPages = new Set();
+  let lastContents = -10;
+  extracted.analysis.pages.filter(p => p.n <= 12).forEach(p => {
+    const heading = p.lines.some(l => /^contents$/i.test(l.text.replace(/\s/g, '')));
+    const entries = p.lines.filter(l => /^\d+\s+[A-Z]|^step\s+[ivxlcdm]+:/i.test(l.text)).length;
+    if (heading || p.n === lastContents + 1 && entries >= 4) { contentsPages.add(p.n); lastContents = p.n; }
+  });
+  blocks.forEach(b => { if (contentsPages.has(b.page)) b.roles.push('frontmatter'); });
+  const titleKey = t => normalizeText(t.replace(/\0/g, '')).toLowerCase()
+    .replace(/^(?:chapter\s+)?\d+\s*[:.]\s*/i, '').replace(/[^\p{L}\p{N}]/gu, '');
   let chapters;
   if (extracted.outline.length) {
     const seen = new Set();
     chapters = extracted.outline.flatMap(entry => {
-      let page = entry.page;
-      while (page <= extracted.pages && !pageBlock.has(page)) page++;
-      const block = pageBlock.get(page);
+      const title = entry.title.replace(/\0/g, '').trim();
+      const keys = [titleKey(title), titleKey(title.split(':')[0])].filter(k => k.length > 5);
+      const matches = blocks.map((b, i) => ({ b, i })).filter(({ b }) => b.k === 'h' && keys.includes(titleKey(b.t)));
+      const nearby = matches.filter(({ b }) => Math.abs(b.page - entry.page) <= 8)
+        .sort((a, b) => Math.abs(a.b.page - entry.page) - Math.abs(b.b.page - entry.page));
+      let block = nearby[0]?.i ?? (matches.length === 1 ? matches[0].i : undefined);
+      if (block === undefined) {
+        const first = pageBlock.get(entry.page);
+        if (first !== undefined) {
+          block = blocks.findIndex((b, i) => i >= first && b.page === entry.page && !b.roles.length);
+          if (block < 0) block = undefined;
+        }
+      }
       const key = `${block}|${entry.title}`;
       if (block === undefined || seen.has(key) || !entry.title) return [];
       seen.add(key);
-      return [{ title: entry.title.slice(0, 120), block, depth: entry.depth }];
+      return [{ title: title.slice(0, 120), block, depth: entry.depth,
+        major: blocks[block].section === 'chapter' || /^(?:chapter|part|book)\b|^\d+\s*:/i.test(title) || entry.depth === 0 }];
     });
   } else {
-    chapters = headingBlocks.map(block => ({ title: blocks[block].t.slice(0, 120), block, depth: 0 }));
+    const contentsTitles = new Set(extracted.analysis.pages.filter(p => contentsPages.has(p.n))
+      .flatMap(p => p.lines.filter(l => /^\d+\s+[A-Z]/.test(l.text)).map(l => titleKey(l.text.replace(/^\d+\s+/, '').split(':')[0]))));
+    chapters = headingBlocks.map(block => ({ title: blocks[block].t.slice(0, 120), block, depth: 0,
+      major: blocks[block].section === 'chapter' || contentsTitles.has(titleKey(blocks[block].t)) }));
   }
-  return { title: extracted.title, author: extracted.author, format: 'pdf', blocks, chapters };
+  chapters.sort((a, b) => a.block - b.block);
+  return cleanBook({ title: extracted.title, author: extracted.author, format: 'pdf', blocks, chapters }, {
+    ...defaultBookOptions(), header: !options.headers, number: !options.numbers, note: !options.footnotes,
+  });
 }
 
 // Returns a book, or {review: extracted} when a PDF needs the review screen.

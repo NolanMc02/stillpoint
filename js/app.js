@@ -1,9 +1,10 @@
 import * as db from './db.js';
 import {
-  buildIndex, buildSegments, chunkAt, estimateMs, formatDuration, lowerBound, rampFactor, splitAtPivot, wordDelay,
+  buildIndex, buildSegments, chunkAt, estimateMs, formatDuration, lowerBound, rampFactor, splitAtPivot, tokenize, wordDelay,
 } from './engine.js';
 import { ImportError, finishPdf, importFile, textToBook } from './importers.js';
 import { defaultCleanOptions, parsePageList } from './pdfclean.js';
+import { anchorPosition, blockChoice, CLEAN_ROLES, cleanBook, defaultBookOptions, positionAnchor } from './bookclean.js';
 import { computeStreaks, monthGrid } from './streaks.js';
 import {
   SOUND_OPTIONS, analyzeTrack, dropTrack, playSound, setTrackLevel, setTrackSource, setVolume, stopSound, unlockAudio,
@@ -366,6 +367,7 @@ function renderLibrary(books) {
 function showBookMenu(book) {
   const sheet = openSheet(book.title, `<div class="sheet-body">
     <button class="menu-btn" data-a="rename">Rename</button>
+    ${book.hasCleanup ? '<button class="menu-btn" data-a="cleanup">Review reading text</button>' : ''}
     <button class="menu-btn" data-a="restart">Read again from the start</button>
     <button class="menu-btn danger" data-a="delete">Delete book</button></div>`);
   sheet.onclick = async e => {
@@ -382,6 +384,9 @@ function showBookMenu(book) {
         closeSheet();
         showLibrary();
       };
+    } else if (action === 'cleanup') {
+      try { await editBookCleanup(book); }
+      catch (error) { console.error(error); toast('Changes could not be saved. Try again.'); }
     } else if (action === 'restart') {
       book.pos = 0;
       book.finishedAt = null;
@@ -437,9 +442,9 @@ async function storeBook(parsed) {
   const book = {
     id, title: parsed.title || 'Untitled', author: cleanAuthor(parsed.author), format: parsed.format,
     addedAt: now, lastReadAt: 0, wordCount: words.length, pos: 0, finishedAt: null, wpm: null,
-    chapters: parsed.chapters || [], bookmarks: [],
+    chapters: parsed.chapters || [], bookmarks: [], hasCleanup: !!parsed.cleanup,
   };
-  await db.saveBook(book, { id, blocks });
+  await db.saveBook(book, { id, blocks, ...(parsed.cleanup ? { cleanup: parsed.cleanup } : {}) });
   return id;
 }
 
@@ -456,8 +461,8 @@ async function importQueue(files) {
         const parsed = await reviewPdf(result.review, file.name);
         if (parsed) { lastId = await storeBook(parsed); added++; }
       } else {
-        lastId = await storeBook(result);
-        added++;
+        const parsed = result.cleanup ? await reviewBook(result.cleanup.source, result.cleanup.options) : result;
+        if (parsed) { lastId = await storeBook(parsed); added++; }
       }
     } catch (error) {
       if (!(error instanceof ImportError)) console.error(error);
@@ -481,6 +486,95 @@ async function importQueue(files) {
 }
 function showLibraryKeepSheet() { if (!R) showLibrary(); }
 
+function reviewBook(source, saved = defaultBookOptions(), editing = false) {
+  return new Promise(resolve => {
+    const options = { ...defaultBookOptions(), ...saved, overrides: { ...saved.overrides } };
+    let cursor = 0, mode = 'source', query = '', parsed, words = 0;
+    const pageSize = 30;
+    const counts = Object.fromEntries(Object.keys(CLEAN_ROLES).map(role => [role, source.blocks.filter(b => b.roles?.includes(role)).length]));
+    const sheet = openSheet('Review reading text', `<div class="sheet-body">
+      <p class="muted">Choose what belongs in ${esc(source.title)}. Omitted text stays on your device so you can restore it later.</p>
+      ${Object.entries(CLEAN_ROLES).filter(([role]) => counts[role]).map(([role, label]) => `<div class="clean-row"><label for="keep-${role}">Include ${esc(label.toLowerCase())}<small>${fmt(counts[role])} passages identified</small></label><input id="keep-${role}" class="switch" type="checkbox" role="switch" data-keep="${role}" ${options[role] ? 'checked' : ''}></div>`).join('')}
+      <div class="clean-row"><label for="announcements">Chapter announcements<small>Navigation keeps all included sections.</small></label><select id="announcements"><option value="chapters">Major chapters</option><option value="all">All sections</option><option value="none">None</option></select></div>
+      <div class="clean-row"><label for="preview-mode">Preview</label><select id="preview-mode"><option value="source">All source text</option><option value="reading">Included reading text</option></select></div>
+      <p class="muted" id="clean-summary" aria-live="polite"></p>
+      <input class="field-text" id="clean-search" type="search" aria-label="Find text or a source page" placeholder="Find text${source.format === 'pdf' ? ' or a page number' : ' or a section'}">
+      <div id="clean-preview"></div>
+      <div class="clean-pager"><button id="clean-prev">Previous</button><span id="clean-page"></span><button id="clean-next">Next</button></div>
+      <div class="sticky-foot"><span id="clean-words"></span><button class="primary" id="book-add">${editing ? 'Save changes' : 'Add to library'}</button></div>
+    </div>`, { tall: true, onClose: () => resolve(null) });
+    sheet.classList.add('cleanup-sheet');
+    $('#announcements', sheet).value = options.announcements;
+    const draw = (rebuild = false) => {
+      if (rebuild || !parsed) {
+        parsed = cleanBook(source, options);
+        words = parsed.blocks.reduce((sum, b) => sum + tokenize(b.t).length, 0);
+      }
+      const rows = source.blocks.filter(b => (mode === 'source' || blockChoice(b, options))
+        && (!query || (source.format === 'pdf' && /^\d+$/.test(query) ? b.page === Number(query)
+          : `${b.location || ''} ${b.t}`.toLowerCase().includes(query))));
+      cursor = Math.min(cursor, Math.max(0, Math.ceil(rows.length / pageSize) - 1));
+      const start = cursor * pageSize;
+      $('#clean-preview', sheet).innerHTML = rows.slice(start, start + pageSize).map(b => {
+        const included = blockChoice(b, options), choice = options.overrides[b.sid] || 'auto';
+        return `<article class="clean-block ${included ? '' : 'omitted'}"><div class="clean-label"><small>${esc(b.location || (b.page ? `Page ${b.page}` : 'Text'))} · ${esc((b.roles || []).map(r => CLEAN_ROLES[r] || r).join(', ') || (b.k === 'h' ? 'Heading' : 'Body text'))}${included ? '' : ' · Omitted'}</small><select data-block="${esc(b.sid)}" aria-label="Treatment of passage ${b.order + 1}">${[['auto', 'Automatic'], ['keep', 'Keep'], ['exclude', 'Exclude'], ['body', 'Read as body text']].map(([v, t]) => `<option value="${v}" ${choice === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div><p class="${b.k === 'h' && choice !== 'body' ? 'clean-heading' : ''}">${esc(b.t)}</p></article>`;
+      }).join('');
+      $('#clean-words', sheet).textContent = `${fmt(words)} words`;
+      $('#clean-summary', sheet).textContent = `${fmt(source.blocks.length - parsed.blocks.length)} passages omitted. ${parsed.chapters.filter(c => c.announce).length} chapter announcements.`;
+      $('#clean-page', sheet).textContent = `${rows.length ? start + 1 : 0}–${Math.min(start + pageSize, rows.length)} of ${fmt(rows.length)}`;
+      $('#clean-prev', sheet).disabled = cursor === 0;
+      $('#clean-next', sheet).disabled = start + pageSize >= rows.length;
+      $('#book-add', sheet).disabled = !words;
+      return parsed;
+    };
+    const move = step => {
+      cursor += step; draw();
+      const body = $('.sheet-body', sheet);
+      body.scrollTop += $('#clean-preview', sheet).getBoundingClientRect().top - body.getBoundingClientRect().top;
+    };
+    $('#clean-prev', sheet).onclick = () => move(-1);
+    $('#clean-next', sheet).onclick = () => move(1);
+    $('#clean-search', sheet).oninput = e => { query = e.target.value.trim().toLowerCase(); cursor = 0; draw(); };
+    sheet.addEventListener('change', e => {
+      const t = e.target;
+      if (t.dataset.keep) options[t.dataset.keep] = t.checked;
+      else if (t.dataset.block) {
+        if (t.value === 'auto') delete options.overrides[t.dataset.block];
+        else options.overrides[t.dataset.block] = t.value;
+      } else if (t.id === 'announcements') options.announcements = t.value;
+      else if (t.id === 'preview-mode') { mode = t.value; cursor = 0; }
+      draw(t.id !== 'preview-mode');
+    });
+    $('#book-add', sheet).onclick = () => {
+      const parsed = draw();
+      if (!parsed.blocks.length) return;
+      sheetClose = null; closeSheet(); resolve(parsed);
+    };
+    draw();
+  });
+}
+
+async function editBookCleanup(book) {
+  if (R?.book.id === book.id) { pause({ animate: false }); await saveProgress(true); }
+  const content = await db.get('contents', book.id);
+  if (!content?.cleanup) { toast('Reimport this book to review its reading text.'); return; }
+  const parsed = await reviewBook(content.cleanup.source, content.cleanup.options, true);
+  if (!parsed) return;
+  const current = await db.get('books', book.id);
+  const { source } = parsed.cleanup;
+  const anchor = positionAnchor(content.blocks, current.pos);
+  current.pos = anchorPosition(source, parsed.blocks, anchor);
+  current.bookmarks = (current.bookmarks || []).map(mark => {
+    const cleanupAnchor = mark.cleanupAnchor || positionAnchor(content.blocks, mark.word);
+    return { ...mark, cleanupAnchor, word: anchorPosition(source, parsed.blocks, cleanupAnchor) };
+  });
+  current.chapters = parsed.chapters;
+  current.wordCount = buildIndex(parsed.blocks).words.length;
+  await db.saveBook(current, { ...content, blocks: parsed.blocks, cleanup: parsed.cleanup });
+  if (R?.book.id === book.id) await openBook(book.id);
+  else await showLibrary();
+}
+
 function reviewPdf(extracted, fileName) {
   return new Promise(resolve => {
     const options = defaultCleanOptions();
@@ -496,7 +590,7 @@ function reviewPdf(extracted, fileName) {
       <div style="padding:14px 0 6px"><label for="skip-list">Pages to skip</label>
         <input class="field-text" id="skip-list" inputmode="text" placeholder="For example 1-4, 210" style="margin-top:6px"></div>
       <div id="page-list"></div>
-      <div class="sticky-foot"><span class="muted" id="word-est"></span><button class="primary" id="pdf-add">Add to library</button></div>
+      <div class="sticky-foot"><span class="muted" id="word-est"></span><button class="primary" id="pdf-add">Review reading text</button></div>
     </div>`, { tall: true, onClose: () => resolve(null) });
     const pageList = $('#page-list', sheet);
     const drawPages = () => {
@@ -525,11 +619,11 @@ function reviewPdf(extracted, fileName) {
         drawPages();
       }
     });
-    $('#pdf-add', sheet).onclick = () => {
+    $('#pdf-add', sheet).onclick = async () => {
       const parsed = finishPdf(extracted, options);
       sheetClose = null;
       closeSheet();
-      resolve(parsed);
+      resolve(await reviewBook(parsed.cleanup.source, parsed.cleanup.options));
     };
   });
 }
@@ -965,14 +1059,16 @@ function tick(run) {
   const chunk = chunkAt(R.pos, R.words, R.wordBlock, S.wordsPerFlash, R.glue);
   renderWord(chunk.text);
   const nextIndex = R.pos + chunk.count;
-  const endOfParagraph = nextIndex < R.words.length && R.wordBlock[nextIndex] !== R.wordBlock[R.pos];
+  const endOfParagraph = nextIndex < R.words.length && R.wordBlock[nextIndex] !== R.wordBlock[R.pos]
+    && !R.blocks[R.wordBlock[nextIndex]].continues;
   let delay = wordDelay(chunk.text, chunk.count, { ...S, wpm: R.wpm }, endOfParagraph)
     * rampFactor(R.sinceplay, S.ramp);
   // Keeps long-run timing accurate if a frame runs late.
   const now = performance.now();
   if (now - R.nextAt < 40) delay -= Math.max(0, now - R.nextAt);
   const chapterIndex = R.chapterStarts.indexOf(nextIndex);
-  if (chapterIndex >= 0) delay += S.chapterPause;
+  const announce = chapterIndex >= 0 && R.book.chapters[chapterIndex].announce !== false;
+  if (announce) delay += S.chapterPause;
   R.nextAt = now + delay;
   R.timer = setTimeout(() => {
     if (run !== R.run) return;
@@ -984,7 +1080,7 @@ function tick(run) {
       return;
     }
     R.pos = nextIndex;
-    if (chapterIndex >= 0 && S.chapterCall) showChapterCall(R.book.chapters[chapterIndex].title);
+    if (announce && S.chapterCall) showChapterCall(R.book.chapters[chapterIndex].title);
     updateMeta();
     if (now - R.lastSave > 5000) saveProgress();
     tick(run);
@@ -1042,7 +1138,7 @@ function saveProgress(force) {
   R.lastSave = now;
   R.book.pos = R.pos;
   R.book.lastReadAt = Date.now();
-  db.put('books', R.book).catch(() => {});
+  return db.put('books', R.book).catch(() => {});
 }
 function seek(pos, { undo = false } = {}) {
   const from = R.pos;
@@ -1278,7 +1374,8 @@ function showToc(tab) {
   const percent = w => `${Math.round((w / total) * 100)}%`;
   const sheet = openSheet(R.book.title, `<div class="tabs" role="tablist">
       <button role="tab" data-t="chapters">Chapters</button><button role="tab" data-t="bookmarks">Bookmarks</button><button role="tab" data-t="search">Search</button>
-    </div><div class="sheet-body" id="toc-body"></div>`, { tall: true });
+    </div>${R.book.hasCleanup ? '<button class="menu-btn clean-open" id="reader-cleanup">Review reading text</button>' : ''}<div class="sheet-body" id="toc-body"></div>`, { tall: true });
+  if ($('#reader-cleanup', sheet)) $('#reader-cleanup', sheet).onclick = () => editBookCleanup(R.book).catch(error => { console.error(error); toast('Changes could not be saved. Try again.'); });
   const body = $('#toc-body', sheet);
   const go = word => { closeSheet(); seek(word, { undo: true }); };
   const draw = name => {

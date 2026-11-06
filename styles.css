@@ -223,6 +223,22 @@ textarea.field-text { min-height: 180px; resize: vertical; font-family: var(--se
 /* PDF review */
 .clean-row { display: flex; gap: 14px; align-items: center; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid var(--faint); }
 .clean-row small { display: block; color: var(--dim); font-size: 14px; }
+.clean-row select { max-width: 48%; font-size: 15px; }
+.cleanup-sheet .sheet-head { flex-shrink: 0; }
+.cleanup-sheet .sheet-body { min-height: 0; }
+.clean-row select, .clean-label select { background: var(--panel); color: var(--ink); border: 1px solid var(--faint); border-radius: 8px; padding: 8px; }
+.clean-row option, .clean-label option { background: var(--bg); color: var(--ink); }
+.clean-block { padding: 14px 0; border-bottom: 1px solid var(--faint); }
+.clean-label { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; color: var(--dim); }
+.clean-label small { flex: 1; min-width: 120px; overflow-wrap: anywhere; }
+.clean-label select { max-width: 100%; font-size: 14px; }
+.clean-block p { font-family: var(--serif); line-height: 1.5; margin: 10px 0 0; overflow-wrap: anywhere; }
+.clean-block.omitted p { opacity: .55; text-decoration: line-through; }
+.clean-heading { font-weight: 700; }
+.clean-pager { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 18px 0; }
+.clean-pager button { padding: 10px; border: 1px solid var(--faint); border-radius: 8px; }
+.clean-pager span { font-size: 13px; color: var(--dim); }
+.clean-open { margin: 0 22px; flex-shrink: 0; }
 .page-row { display: flex; gap: 12px; align-items: flex-start; padding: 11px 0; border-bottom: 1px solid var(--faint); }
 .page-row .page-text { flex: 1; min-width: 0; font-size: 14px; line-height: 1.35; color: var(--dim); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; font-family: var(--serif); }
 .page-row b { font-weight: 600; min-width: 32px; font-variant-numeric: tabular-nums; }

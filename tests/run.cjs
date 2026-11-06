@@ -6,7 +6,7 @@ const results = [];
 const ok = (name, cond, info = '') => { results.push([!!cond, name, info]); console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${info !== '' ? '  [' + info + ']' : ''}`); };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
   const ctx = await browser.newContext({ ...devices['iPhone 15'], serviceWorkers: 'allow', recordVideo: undefined });
   const page = await ctx.newPage();
   const errors = [];
@@ -35,6 +35,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const expected = { 'book.epub': 5, 'book.docx': 5, 'book.html': 5, 'book.md': 5, 'book.txt': 5, 'book.mobi': 2 };
   for (const [file, chapters] of Object.entries(expected)) {
     await addFiles([file]);
+    if (file.endsWith('.epub')) { await page.waitForSelector('#book-add'); await page.click('#book-add'); }
     await page.waitForSelector('#reader');
     const info = await sp(() => { const R = __stillpoint.R; return { n: R.words.length, c: R.book.chapters.length, t: R.book.title, a: R.book.author, sample: R.words.slice(0, 12).join(' '), joined: R.words.join(' ') }; });
     ok(`${file} imports with chapters`, info.n > 50 && info.c >= chapters, `${info.n} words, ${info.c} chapters, "${info.t}"`);
@@ -70,6 +71,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await page.fill('#skip-list', '12');
   await page.dispatchEvent('#skip-list', 'change');
   await page.click('#pdf-add');
+  await page.waitForSelector('#book-add');
+  await page.click('#book-add');
   await page.waitForSelector('#reader');
   const pdf = await sp(() => { const R = __stillpoint.R; const j = R.words.join(' '); return { n: R.words.length, c: R.book.chapters.map(c => c.title), header: /Running Header/.test(j), hyphen: /contin-/.test(j), joined: /continuation/.test(j), num: R.blocks.some(b => /^\d+$/.test(b.t)) }; });
   ok('PDF removes headers', !pdf.header);
