@@ -41,6 +41,13 @@ async function packageFor(job) {
     const context = await browser.newContext({ ...devices['iPhone 15'], serviceWorkers: 'block', reducedMotion: 'reduce', acceptDownloads: true });
     await context.addInitScript(() => {
       window.__mediaActions = {};
+      window.__audioBlobs = new Map();
+      const createObjectURL = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = blob => {
+        const url = createObjectURL(blob);
+        window.__audioBlobs.set(url, { type: blob.type, size: blob.size });
+        return url;
+      };
       if (navigator.mediaSession) {
         const original = navigator.mediaSession.setActionHandler.bind(navigator.mediaSession);
         navigator.mediaSession.setActionHandler = (action, handler) => { window.__mediaActions[action] = handler; original(action, handler); };
@@ -106,6 +113,11 @@ async function packageFor(job) {
     await page.setInputFiles('#narration-import', { name: 'audiobook.zip', mimeType: 'application/zip', buffer: bytes });
     await page.waitForFunction(() => !!window.__stillpoint.R?.narration);
     check('import attaches audio to the existing book', await page.evaluate(() => __stillpoint.R.book.audioMode === 'page'));
+    check('imported media has an audio MIME type on its playback URL', await page.evaluate(() => {
+      const player = __stillpoint.R.narration;
+      const blob = __audioBlobs.get(player.audio.src);
+      return blob.type === (player.manifest.clips[0].file.endsWith('.m4a') ? 'audio/mp4' : 'audio/wav');
+    }));
     await page.click('#play');
     await page.waitForFunction(() => __stillpoint.R.pos >= 2 && __stillpoint.R.state === 'playing');
     check('audio clock advances and highlights scrolling text', await page.evaluate(() =>
@@ -183,9 +195,25 @@ async function packageFor(job) {
     await page.evaluate(() => __setHidden(false));
     check('turning narration off releases system media controls', await page.evaluate(() => navigator.mediaSession.metadata === null && !__mediaActions.play));
     await page.click('#r-back');
+    // Audio saved by the first release has an empty type. Reopening must repair it
+    // in memory, without changing its bytes or asking the reader to reimport.
+    await page.evaluate(async () => {
+      const db = await import('/js/db.js');
+      for (const record of await db.getAll('narrationdata')) {
+        record.data = record.data.slice(0, record.data.size, '');
+        await db.put('narrationdata', record);
+      }
+    });
     await page.click('.book-title');
     await page.waitForSelector('#reader');
     check('saved audio survives reopening', await page.evaluate(() => !!__stillpoint.R.narration));
+    check('previously saved untyped audio is repaired without reimport', await page.evaluate(async () => {
+      const player = __stillpoint.R.narration;
+      const db = await import('/js/db.js');
+      const saved = await db.get('narrationdata', `${__stillpoint.R.book.id}:${player.manifest.clips[0].file}`);
+      const played = __audioBlobs.get(player.audio.src);
+      return saved.data.type === '' && played.type.startsWith('audio/') && saved.data.size === played.size;
+    }));
     // Broken replacement must leave all previous audio intact.
     zip.remove(manifest.clips[0].file);
     await page.click('#r-audio');

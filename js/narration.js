@@ -21,6 +21,14 @@ export async function createNarrationJob(book, content) {
 }
 
 const fail = message => { throw new Error(message); };
+export function playableAudioBlob(data, file) {
+  // ZIP entries have no MIME type. AVFoundation needs the media type on Blob URLs.
+  // Apply this on every load too, so existing IndexedDB audio needs no reimport.
+  const types = { m4a: 'audio/mp4', mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac' };
+  const type = types[file.split('.').pop().toLowerCase()];
+  if (!type) throw new Error('This audio format is not supported.');
+  return data instanceof Blob ? data.slice(0, data.size, type) : new Blob([data], { type });
+}
 export function validateManifest(manifest, job) {
   if (manifest?.format !== 'stillpoint-audiobook' || manifest.version !== 1 || manifest.tokenizer !== TOKENIZER) fail('This audiobook format is not supported.');
   if (manifest.textHash !== job.textHash) fail('The audiobook does not match this reading text. Export a new narration job after reviewing the text.');
@@ -56,7 +64,7 @@ export async function readNarrationPackage(file, job) {
     if (!entry) fail(`This audiobook is missing ${clip.file}.`);
     const data = await entry.async('blob');
     if (!data.size) fail('This audiobook contains an empty audio clip.');
-    audio.push({ file: clip.file, data });
+    audio.push({ file: clip.file, data: playableAudioBlob(data, clip.file) });
   }
   return { manifest, audio };
 }
@@ -125,7 +133,7 @@ export class NarrationPlayer {
     if (revision !== this.revision) return;
     if (!data) throw new Error('This audio clip is missing. Import the audiobook again.');
     URL.revokeObjectURL(this.url);
-    this.url = URL.createObjectURL(data);
+    this.url = URL.createObjectURL(playableAudioBlob(data, this.manifest.clips[word.clipIndex].file));
     this.audio.src = this.url;
     this.clipIndex = word.clipIndex;
     this.audio.load();
@@ -145,7 +153,7 @@ export class NarrationPlayer {
       if (revision !== this.revision) return false;
       if (!data) throw new Error('This audio clip is missing. Import the audiobook again.');
       URL.revokeObjectURL(this.url);
-      this.url = URL.createObjectURL(data);
+      this.url = URL.createObjectURL(playableAudioBlob(data, clip.file));
       this.audio.src = this.url;
       this.clipIndex = word.clipIndex;
     }
