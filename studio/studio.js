@@ -2,6 +2,7 @@ import { importFile } from '../js/importers.js';
 import { cleanBook, CLEAN_ROLES, defaultBookOptions } from '../js/bookclean.js';
 import { createNarrationJob } from '../js/narration.js';
 import { tokenize } from '../js/engine.js';
+import { duration, progressDetails } from './progress.js';
 
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -9,7 +10,10 @@ let connection = null, parsed = null, source = null, options = null, selectedCha
 let chapterSelectionChanged = false;
 let activePreview = null, busy = false;
 let online = false, submitting = false, runningJob = null, bookWordCount = 0;
-let pollTimer;
+let pollTimer, offlineNotice = false;
+const progressOnly = new URLSearchParams(location.search).get('progress') === '1';
+document.body.classList.toggle('progress-only', progressOnly);
+$('#full-studio').hidden = !progressOnly;
 const notify = message => { $('#notice').hidden = !message; $('#notice').textContent = message || ''; };
 
 function updateActions() {
@@ -136,24 +140,52 @@ async function requestGeneration(kind) {
 }
 
 const phaseLabels = { starting: 'Starting the local engine', loading: 'Loading the local voice engine', downloading: 'Downloading this voice for its first use', synthesis: 'Narrating passages', alignment: 'Aligning words', assembly: 'Joining the narration', encoding: 'Preparing the audiobook', finishing: 'Finishing the local voice session', complete: 'Ready to listen', paused: 'Paused · completed passages are saved', cancelled: 'Voice preview cancelled', error: 'Generation needs attention' };
+function renderGenerationProgress(jobs) {
+  const panel = $('#generation-progress');
+  const job = jobs.find(j => j.kind === 'book' && j.status === 'running')
+    || jobs.find(j => j.kind === 'book' && ['paused', 'error', 'ready'].includes(j.status));
+  panel.hidden = !job;
+  $('#progress-empty').hidden = !(progressOnly && !job);
+  document.body.classList.toggle('has-generation-progress', !!job);
+  if (!job) return;
+  const info = progressDetails(job);
+  const voice = connection.voices.find(v => v.id === job.voice)?.name;
+  const headline = job.status === 'ready' ? 'Your audiobook is ready' : job.status === 'paused' ? 'Generation paused'
+    : job.status === 'error' ? 'Generation needs attention' : phaseLabels[job.phase] || 'Generating your audiobook';
+  const percentage = job.status === 'ready' ? '100%' : info.finalizing ? 'Finalizing' : info.indeterminate ? 'Preparing' : `${info.percent}%`;
+  const eta = job.status === 'ready' ? 'Ready to download' : job.status === 'paused' ? 'Completed passages are saved'
+    : info.finalizing ? 'Preparing the audio file; time varies with book length'
+    : info.eta !== null ? `About ${duration(info.eta)} of narration remaining · packaging follows`
+    : 'Time estimate appears after a few passages';
+  panel.innerHTML = `<div class="generation-heading"><div><p class="eyebrow">${esc(headline)}</p><h2>${esc(job.title)}</h2><p class="hint">${[voice, job.deviceName || (job.device === 'cuda' ? 'NVIDIA GPU' : job.device === 'cpu' ? 'CPU' : '')].filter(Boolean).map(esc).join(' · ')}</p></div><strong class="generation-percent">${percentage}</strong></div>
+    <div class="progress generation-meter ${info.indeterminate ? 'indeterminate' : ''}" role="progressbar" aria-label="Narration progress" aria-valuemin="0" aria-valuemax="100" ${info.indeterminate ? '' : `aria-valuenow="${info.percent}"`}><i></i></div>
+    <div class="generation-stats">${job.chapter ? `<span>${esc(job.chapter)}</span>` : ''}<span>${job.completed || 0} of ${job.total || '…'} passages narrated</span><span>${duration(info.elapsed)} elapsed</span>${job.totalWords ? `<span>${(job.completedWords || 0).toLocaleString()} of ${job.totalWords.toLocaleString()} words</span>` : ''}${job.audioSeconds ? `<span>${duration(job.audioSeconds)} audio created</span>` : ''}</div>
+    <p class="hint generation-eta">${esc(eta)}</p>${job.status === 'running' && job.passage ? `<p class="generation-passage">${esc(job.passage)}</p>` : ''}${job.error ? `<p role="alert">${esc(job.error)}</p>` : ''}
+    <div class="job-actions">${job.status === 'running' ? `<button class="secondary" data-pause="${job.id}">Pause after this passage</button>` : ''}${['paused', 'error'].includes(job.status) ? `<button class="secondary" data-resume="${job.id}" ${busy ? 'disabled' : ''}>Resume generation</button>` : ''}${job.status === 'ready' ? `<a href="/api/jobs/${job.id}/download">Download for Stillpoint ↗</a>` : ''}</div>`;
+  panel.querySelector('.generation-meter i').style.width = `${info.percent}%`;
+}
+
 async function poll() {
   try {
     const state = await api('/api/status');
     const wasBusy = busy;
     connection = state;
     online = true;
+    if (offlineNotice) { notify(''); offlineNotice = false; }
     runningJob = state.jobs.find(j => j.status === 'running') || null;
     busy = !!runningJob;
     $('#engine-state').textContent = state.ready ? 'Local engine ready' : 'Voice engine needs setup';
     $('#engine-state').classList.toggle('ready', state.ready);
     if (!state.ready) notify('Open Studio with its launcher to use the installed voice engine.');
     if (!$('#voice').options.length) $('#voice').innerHTML = state.voices.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('');
+    renderGenerationProgress(state.jobs);
     $('#voice-description').textContent = state.voices.find(v => v.id === $('#voice').value)?.description || '';
     $('#jobs').innerHTML = state.jobs.length ? state.jobs.map(job => {
       const percent = job.total ? Math.min(100, Math.round((job.completed || 0) / job.total * 100)) : 0;
       const progress = job.total ? `${job.completed || 0} of ${job.total} passages` : '';
-      return `<article class="job"><div class="job-top"><h3>${esc(job.title)}${job.kind === 'preview' ? ' · voice preview' : ''}</h3><span class="hint">${job.status === 'ready' ? 'Complete' : `${percent}%`}</span></div><p class="hint">${esc(job.error || phaseLabels[job.phase] || job.status)}${progress ? ` · ${progress}` : ''}</p><div class="progress"><i style="width:${job.status === 'ready' ? 100 : percent}%"></i></div><div class="job-actions">${job.status === 'running' ? `<button class="quiet" data-pause="${job.id}">Pause after this passage</button>` : ''}${['paused', 'error', 'queued'].includes(job.status) ? `<button class="secondary" data-resume="${job.id}" ${busy ? 'disabled' : ''}>Resume generation</button>` : ''}${job.status === 'ready' && job.kind !== 'preview' ? `<a href="/api/jobs/${job.id}/download">Download for Stillpoint ↗</a>` : ''}${job.status === 'ready' ? `<button class="quiet" data-listen="${job.id}">Listen</button>` : ''}</div></article>`;
+      return `<article class="job"><div class="job-top"><h3>${esc(job.title)}${job.kind === 'preview' ? ' · voice preview' : ''}</h3><span class="hint">${job.status === 'ready' ? 'Complete' : `${percent}%`}</span></div><p class="hint">${esc(job.error || phaseLabels[job.phase] || job.status)}${progress ? ` · ${progress}` : ''}</p><div class="progress"><i data-percent="${job.status === 'ready' ? 100 : percent}"></i></div><div class="job-actions">${job.status === 'running' ? `<button class="quiet" data-pause="${job.id}">Pause after this passage</button>` : ''}${['paused', 'error', 'queued'].includes(job.status) ? `<button class="secondary" data-resume="${job.id}" ${busy ? 'disabled' : ''}>Resume generation</button>` : ''}${job.status === 'ready' && job.kind !== 'preview' ? `<a href="/api/jobs/${job.id}/download">Download for Stillpoint ↗</a>` : ''}${job.status === 'ready' ? `<button class="quiet" data-listen="${job.id}">Listen</button>` : ''}</div></article>`;
     }).join('') : '<p class="empty">Your generated books will appear here.</p>';
+    document.querySelectorAll('#jobs [data-percent]').forEach(bar => { bar.style.width = `${bar.dataset.percent}%`; });
     const preview = state.jobs.find(j => j.id === activePreview && j.status === 'ready');
     if (preview) {
       $('#voice-player').src = `/api/jobs/${preview.id}/audio`;
@@ -165,6 +197,7 @@ async function poll() {
   } catch (error) {
     online = false; updateActions();
     $('#engine-state').textContent = 'Local engine offline';
+    offlineNotice = true;
     notify('Start Audiobook Studio on your computer to generate narration. Your reader and downloaded audiobooks work independently.');
   }
 }
@@ -197,7 +230,7 @@ $('#voice').onchange = async () => {
 $('#speed').oninput = () => { $('#speed-label').textContent = Number($('#speed').value).toFixed(2).replace(/0$/, '') + '×'; refreshBook(); };
 $('#generate').onclick = () => requestGeneration('book').catch(error => notify(error.message));
 $('#preview-voice').onclick = () => requestGeneration('preview').catch(error => notify(error.message));
-$('#jobs').onclick = async e => {
+const handleJobAction = async e => {
   const pause = e.target.closest('[data-pause]'), resume = e.target.closest('[data-resume]'), listen = e.target.closest('[data-listen]');
   try {
     if (pause) { await api(`/api/jobs/${pause.dataset.pause}/pause`, {}); notify('Pausing after the current passage finishes.'); }
@@ -206,6 +239,8 @@ $('#jobs').onclick = async e => {
     if (pause || resume) await poll();
   } catch (error) { notify(error.message); }
 };
+$('#jobs').onclick = handleJobAction;
+$('#generation-progress').onclick = handleJobAction;
 $('#stop-engine').onclick = async () => {
   try {
     await api('/api/shutdown', {}); clearInterval(pollTimer);

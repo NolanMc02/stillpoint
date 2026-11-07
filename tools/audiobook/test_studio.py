@@ -7,6 +7,7 @@ import sys
 import threading
 import unittest
 import zipfile
+from unittest.mock import patch
 
 from generate import atomic_json
 from studio import StudioServer
@@ -79,6 +80,17 @@ class StudioTests(unittest.TestCase):
         self.assertEqual((state['status'], state['phase']), ('running', 'finishing'))
         self.server.processes.clear()
         self.assertEqual(self.server.state(self.identifier)['status'], 'ready')
+
+    def test_running_elapsed_time_advances_without_rewriting_progress(self):
+        class Process:
+            def poll(self): return None
+        self.server.processes[self.identifier] = Process()
+        atomic_json(self.directory / 'state.json', {'id': self.identifier, 'status': 'running',
+            'startedAt': 90, 'elapsedBeforeSeconds': 5, 'elapsedSeconds': 7})
+        with patch('studio.time.time', return_value=100):
+            state = self.server.state(self.identifier)
+        self.assertEqual(state['elapsedSeconds'], 15)
+        self.assertEqual(json.loads((self.directory / 'state.json').read_text())['elapsedSeconds'], 7)
 
     def test_cancel_preview_releases_the_worker_immediately(self):
         process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])

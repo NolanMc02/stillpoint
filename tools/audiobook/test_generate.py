@@ -8,7 +8,7 @@ from unittest.mock import patch
 import wave
 import zipfile
 
-from generate import GenerationPaused, combine_clips, digest, generate, map_spans, split_job, validate_job
+from generate import GenerationPaused, atomic_json, combine_clips, digest, generate, map_spans, split_job, validate_job
 
 
 def job_for(texts):
@@ -19,6 +19,54 @@ def job_for(texts):
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_progress_write_recovers_from_a_brief_windows_file_lock(self):
+        original = Path.replace
+        attempts = []
+        def replace(source, target):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise PermissionError('File is briefly in use')
+            return original(source, target)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'state.json'
+            target.write_text('{"completed":1}')
+            with patch.object(Path, 'replace', replace), patch('generate.time.sleep'):
+                atomic_json(target, {'completed': 2})
+            self.assertEqual(json.loads(target.read_text()), {'completed': 2})
+            self.assertEqual(list(Path(directory).iterdir()), [target])
+
+    def test_progress_counts_words_and_estimates_only_measured_synthesis(self):
+        clock = [0]
+        class Engine:
+            def __init__(self, args):
+                clock[0] += 30  # Loading time must not inflate narration ETA.
+            def synthesize(self, chunk, output):
+                clock[0] += 2
+                with wave.open(str(output), 'wb') as audio:
+                    audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(24000)
+                    audio.writeframes(b'\0\0' * 24000)
+                return [t['w'] for t in chunk['tokens']], [{'text': t['w'], 'startMs': i * 100, 'endMs': (i + 1) * 100} for i, t in enumerate(chunk['tokens'])]
+        args = argparse.Namespace(engine='kokoro', voice='af_heart', model=None, speed=1, device='cpu', max_chars=300, audio_format='wav')
+        events = []
+        with tempfile.TemporaryDirectory() as directory, patch('engines.KokoroEngine', Engine), patch('generate.time.monotonic', side_effect=lambda: clock[0]):
+            generate(job_for(['One two.', 'Three four.', 'Five six.']), Path(directory) / 'book.zip', args, progress=events.append)
+        measured = next(e for e in events if e['phase'] == 'synthesis' and e['completed'] == 2)
+        self.assertEqual((measured['totalWords'], measured['completedWords'], measured['audioSeconds']), (6, 4, 2))
+        self.assertEqual(measured['etaSeconds'], 2)
+        self.assertIsNone(next(e for e in events if e['phase'] == 'loading')['etaSeconds'])
+        self.assertIsNone(next(e for e in events if e['phase'] == 'encoding')['etaSeconds'])
+
+    def test_silent_punctuation_anchors_to_speech_without_hiding_missing_words(self):
+        spans = [{'text': 'Hello', 'startMs': 100, 'endMs': 400}, {'text': 'world', 'startMs': 450, 'endMs': 800}]
+        mapped = map_spans(['"', 'Hello', '—', 'world', '"'], spans, 900)
+        self.assertEqual(mapped[1], {'startMs': 100, 'endMs': 400})
+        self.assertEqual(mapped[3], {'startMs': 450, 'endMs': 800})
+        self.assertTrue(all(mapped[i]['status'] == 'punctuation-boundary' for i in [0, 2, 4]))
+        self.assertTrue(all(a['startMs'] <= b['startMs'] for a, b in zip(mapped, mapped[1:])))
+        self.assertTrue(all(t['endMs'] > t['startMs'] for t in mapped))
+        with self.assertRaisesRegex(ValueError, 'Alignment text differs'):
+            map_spans(['Hello', 'missing', 'world', '"'], spans, 900)
+
     def test_pause_preserves_completed_passages_for_resume(self):
         calls = []
         class Engine:

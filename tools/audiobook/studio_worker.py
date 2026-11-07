@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 import traceback
+import time
 import zipfile
 from generate import GenerationPaused, atomic_json, generate
 
@@ -14,9 +15,13 @@ def main():
     directory = args.directory
     request = json.loads((directory / 'request.json').read_text(encoding='utf-8'))
     state = json.loads((directory / 'state.json').read_text(encoding='utf-8'))
+    elapsed_before = state.get('elapsedSeconds', 0)
+    started = time.monotonic()
+    state.update(startedAt=time.time(), elapsedBeforeSeconds=elapsed_before)
     state.update(id=directory.name, title=request['job']['book']['title'], kind=request.get('kind', 'book'), voice=request['voice'], status='running')
     def update(info):
         state.update(info)
+        state.update(elapsedSeconds=round(elapsed_before + time.monotonic() - started, 1), updatedAt=time.time())
         atomic_json(directory / 'state.json', state)
     config = argparse.Namespace(engine='kokoro', model=None, voice=request['voice'], speed=request['speed'],
                                 device=request.get('device', 'auto'), max_chars=300, audio_format='m4a')

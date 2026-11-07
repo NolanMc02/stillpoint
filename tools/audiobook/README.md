@@ -9,7 +9,7 @@ Studio is the desktop generation interface. Once the Kokoro environment below is
 1. Choose a DRM-free, reflowable EPUB.
 2. Review reading text and optionally choose chapters. Include or omit passages before generating.
 3. Choose a narrator and preview the voice. The first use may download weights. A message beside the controls explains when a book is required, a voice is downloading, or another job is running. Change narrators or use **Cancel voice preview** to stop an unfinished preview; pause a full audiobook before starting a different voice job.
-4. Generate the audiobook. Progress is saved per passage; Pause finishes the current passage before stopping. Resume reuses verified completed passages.
+4. Generate the audiobook. A prominent live card shows the current stage, percentage of words narrated, passage/word counts, chapter/passage, elapsed time, audio created, and the actual CPU/GPU device. A measured estimate of remaining narration appears after two fresh passages; packaging is a separate stage. Progress is saved per passage; Pause finishes the current passage before stopping. Resume reuses verified completed passages.
 5. Download the result, transfer it to your phone, and import it through Stillpoint's **Add a book → Choose files**. One ZIP supplies both reading text and audio. Existing books are not replaced automatically.
 
 Closing the browser window does not stop the engine. Use **Close local engine** when finished; active generation pauses after its current passage. Reopening Studio restores job history. Source text, jobs, PCM caches, and output remain in `.studio-jobs/`; model downloads use `.studio-models/`. These directories are ignored by Git. Pause active jobs and close the engine before manually removing their saved files to recover disk space.
@@ -31,6 +31,10 @@ Open `http://localhost:8123`. Import an EPUB and finish **Review reading text**.
 After generation, open the same book and choose **Audiobook → Import audiobook**. Select the generated ZIP. Choose **Book · pages or scrolling** with **Listen along in book mode**, **Listen and follow text**, **Listen and follow RSVP**, or **Read without narration**. Press play in the reader. In narration modes the speed controls adjust audio playback speed; the settings sheet also offers exact rates.
 
 The existing word menu's **Read from here**, chapter navigation, search, bookmarks, rewind, and position slider use the shared reading position. Narration follows those jumps. Normal RSVP keeps its independent WPM pacing when narration is off.
+
+## Windows with an NVIDIA GPU
+
+Use **Setup Audiobook Studio (Windows).cmd** once, then **Open Audiobook Studio.cmd**. The setup checks CUDA and produces a real timed speech sample before reporting success. The full [Windows quick start](WINDOWS.md) covers Python 3.12, drivers, setup, and transferring results to your phone. This is a portable Python/browser application; it does not need a rewrite for Windows. Native Windows/3060 Ti testing is still pending.
 
 ## Kokoro: tested path
 
@@ -103,7 +107,7 @@ Each generation writes an adjacent `.report.json` with word count, audio duratio
 
 Every displayed token must have exactly one timing record, in reading order. Records carry `sid`, zero-based token `offset`, `startMs`, and `endMs` relative to their clip. The generator keeps times in the original audio timeline; changing playback rate does not rewrite them. One displayed token can cover several spoken words, such as `$12` spoken as “twelve dollars.”
 
-Kokoro timings come from model-predicted phoneme durations. Qwen uses a forced aligner. Both are estimates; syntactic validation does not prove acoustic accuracy or prove the model pronounced every word correctly. The generator stops on mismatched alignment text or missing/invalid timing rather than distributing duration uniformly. Human auditioning is still needed.
+Kokoro timings come from model-predicted phoneme durations. Qwen uses a forced aligner. Standalone silent punctuation tokens receive explicitly marked boundary stamps next to aligned speech; spoken-word mismatches still fail validation. Both are estimates; syntactic validation does not prove acoustic accuracy or prove the model pronounced every word correctly. The generator stops on mismatched alignment text or missing/invalid timing rather than distributing duration uniformly. Human auditioning is still needed.
 
 ZIP contents:
 

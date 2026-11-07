@@ -52,6 +52,9 @@ class StudioServer(ThreadingHTTPServer):
         if state['status'] == 'running' and (not process or process.poll() is not None):
             state.update(status='paused', phase='paused')
             atomic_json(path, state)
+        if state['status'] == 'running' and state.get('startedAt'):
+            state['elapsedSeconds'] = round(state.get('elapsedBeforeSeconds', 0) + max(0, time.time() - state['startedAt']), 1)
+            state['updatedAt'] = time.time()
         return state
 
     def start(self, identifier):
@@ -65,6 +68,7 @@ class StudioServer(ThreadingHTTPServer):
             atomic_json(directory / 'state.json', state)
             env = os.environ.copy()
             env['PYTHONUNBUFFERED'] = '1'
+            env['PYTHONIOENCODING'] = 'utf-8'
             if self.model_cache:
                 env['HF_HOME'] = str(self.model_cache)
             with (directory / 'worker.log').open('a', encoding='utf-8') as log:

@@ -19,6 +19,7 @@ def device_for(requested):
 class KokoroEngine:
     def __init__(self, args):
         from kokoro import KModel, KPipeline
+        import torch
         from huggingface_hub import hf_hub_download, try_to_load_from_cache
         self.args = args
         if not args.voice.startswith(('a', 'b')):
@@ -34,7 +35,9 @@ class KokoroEngine:
         # Cached voices must not wait on a network metadata check to work offline.
         model = KModel(repo_id=repo, config=local_first('config.json'),
                        model=local_first(KModel.MODEL_NAMES.get(repo, 'kokoro-v1_0.pth')))
-        model = model.to(device_for(args.device)).eval()
+        self.device = device_for(args.device)
+        self.device_name = torch.cuda.get_device_name(0) if self.device == 'cuda' else 'CPU'
+        model = model.to(self.device).eval()
         self.pipeline = KPipeline(lang_code=args.voice[0], model=model, repo_id=repo)
         self.pipeline.voices[args.voice] = self.pipeline.load_single_voice(local_first(f'voices/{args.voice}.pt'))
 

@@ -3,9 +3,11 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; media-src 'self' blob:; img-src 'self' data: blob:; worker-src 'self' blob:">
 <title>Stillpoint · Audiobook Studio</title><link rel="stylesheet" href="studio.css"></head>
 <body><header><a class="brand" href="../">stillpoint<span> / audiobook studio</span></a><span id="engine-state" class="badge">Connecting to local engine</span></header>
-<main>
+<main><a id="full-studio" class="secondary progress-back" href="./" hidden>Open full Studio ↗</a>
   <section class="intro"><div><p class="eyebrow">A BOOK, IN YOUR OWN TIME</p><h1>Bring your books<br>to life.</h1><p class="lead">Natural narration, made on your computer.<br>Your reading place follows every word.</p></div><div class="sound-art" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div></section>
   <p id="notice" role="status" hidden></p>
+  <p id="progress-empty" class="hint" hidden>No audiobook generation has started yet. Start one in Studio; its progress will appear here automatically.</p>
+  <section id="generation-progress" class="panel generation-progress" aria-label="Audiobook generation progress" hidden></section>
   <div class="workspace">
     <section class="panel book-panel"><div class="panel-heading"><span class="step">01</span><h2>Your book</h2></div>
       <label class="drop-zone" id="drop-zone"><span class="book-icon" aria-hidden="true">▤</span><strong>Choose an EPUB</strong><span>or drop a book here · DRM-free EPUB</span><input id="epub-file" type="file" accept=".epub,application/epub+zip"></label>
@@ -24,7 +26,7 @@
       <p id="action-status" class="hint" role="status" aria-live="polite">Choose an EPUB to preview a voice or generate an audiobook.</p>
       <button id="cancel-preview" class="quiet" hidden>Cancel voice preview</button><audio id="voice-player" controls hidden></audio>
       <div class="generation-note"><strong>Made locally with Kokoro</strong><p>Voices download once, then work offline. Loading the voice engine can take a few minutes on first use.</p></div>
-      <button id="generate" class="primary" disabled>Generate audiobook <span>↗</span></button><p class="hint centered">Includes the book, audio and word timings.</p>
+      <button id="generate" class="primary" disabled>Generate audiobook <span>↗</span></button><p class="hint centered">Includes the book, audio and word timings.</p><a class="progress-link" href="?progress=1" target="_blank" rel="noopener">Open generation progress ↗</a>
     </aside>
   </div>
   <section class="panel jobs-panel"><div class="panel-heading"><span class="step">03</span><h2>Your narration</h2><span class="hint">You can close this window and return while the local engine stays open.</span></div><div id="jobs"><p class="empty">Your generated books will appear here.</p></div></section>

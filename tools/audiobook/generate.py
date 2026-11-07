@@ -10,6 +10,7 @@ import re
 import sys
 import subprocess
 import time
+import tempfile
 import unicodedata
 import wave
 import zipfile
@@ -112,7 +113,10 @@ def map_spans(expected, spans, duration_ms):
     for word in expected:
         stop = cursor + len(letters(word))
         if stop == cursor:
-            raise ValueError(f'Reading token has no alignable letters or numbers: {word!r}')
+            # Tokenizer splits can leave a quote/dash as a separate display token.
+            # It is silent; attach it to an adjacent acoustic boundary below.
+            result.append(None)
+            continue
         while span_index < len(indexed) and indexed[span_index][1] <= cursor:
             span_index += 1
         matches = []
@@ -129,6 +133,20 @@ def map_spans(expected, spans, duration_ms):
         result.append({'startMs': begin, 'endMs': end})
         previous = begin
         cursor = stop
+    for i, timing in enumerate(result):
+        if timing is not None:
+            continue
+        left = result[i - 1] if i else None
+        right = next((item for item in result[i + 1:] if item is not None), None)
+        if left:
+            boundary = min(left['endMs'], right['startMs'] if right else duration_ms)
+            begin = max(left['startMs'], boundary - 1)
+            end = min(duration_ms, begin + 1)
+        elif right:
+            begin, end = right['startMs'], min(right['endMs'], right['startMs'] + 1)
+        else:
+            raise ValueError('A passage has no aligned speech to anchor its punctuation.')
+        result[i] = {'startMs': begin, 'endMs': end, 'status': 'punctuation-boundary'}
     return result
 
 
@@ -163,9 +181,22 @@ def checksum(path):
 
 
 def atomic_json(path, value):
-    temp = path.with_suffix('.tmp')
-    temp.write_text(compact(value), encoding='utf-8')
-    temp.replace(path)
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                     prefix=f'.{path.name}.', suffix='.tmp', delete=False) as stream:
+        temp = Path(stream.name)
+        stream.write(compact(value))
+    try:
+        for attempt in range(6):
+            try:
+                temp.replace(path)
+                break
+            except PermissionError:
+                # A polling reader or antivirus can briefly hold a Windows file.
+                if attempt == 5:
+                    raise
+                time.sleep(.03 * (attempt + 1))
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def package_audio(wav, audio_format):
@@ -205,7 +236,7 @@ def combine_clips(clips, destination, engine):
                 words.extend({'sid': chunk['sid'], 'offset': chunk['offset'] + i,
                               'startMs': round(timing['startMs'] + offset_ms, 3),
                               'endMs': round(timing['endMs'] + offset_ms, 3),
-                              'status': 'model-duration' if engine == 'kokoro' else 'forced-alignment'}
+                              'status': timing.get('status', 'model-duration' if engine == 'kokoro' else 'forced-alignment')}
                              for i, timing in enumerate(mapped))
                 while data := source.readframes(65536):
                     output.writeframesraw(data)
@@ -225,15 +256,29 @@ def generate(job, output, args, progress=None, should_pause=None):
     pending = []
     clips = []
     started = time.monotonic()
+    total_words = sum(len(chunk['tokens']) for chunk in chunks)
+    completed_words = 0
+    synthesis_seconds = 0
+    fresh_words = 0
+    fresh_chunks = 0
+    audio_seconds = 0
+    chapter_names = {chapter['sid']: chapter['title'] for chapter in job.get('chapters', [])}
+    chapter = ''
     def notify(phase, completed=0, total=len(chunks), **extra):
         if progress:
-            progress({'phase': phase, 'completed': completed, 'total': total, 'elapsedSeconds': round(time.monotonic() - started, 1), **extra})
+            remaining = max(0, total_words - completed_words)
+            eta = round(remaining * synthesis_seconds / fresh_words) if fresh_chunks >= 2 and fresh_words and remaining else None
+            progress({'phase': phase, 'completed': completed, 'total': total, 'totalWords': total_words,
+                      'completedWords': completed_words, 'audioSeconds': round(audio_seconds, 2),
+                      'etaSeconds': eta if phase == 'synthesis' else None,
+                      'elapsedSeconds': round(time.monotonic() - started, 1), **extra})
     def checkpoint():
         if should_pause and should_pause():
             raise GenerationPaused()
     for index, chunk in enumerate(chunks):
         checkpoint()
-        notify('synthesis', index, passage=chunk['text'][:160])
+        chapter = chapter_names.get(chunk['sid'], chapter)
+        notify('synthesis', index, passage=chunk['text'][:160], chapter=chapter)
         key = digest([config, chunk])
         wav = cache / f'{key}.wav'
         metadata = cache / f'{key}.json'
@@ -250,13 +295,21 @@ def generate(job, output, args, progress=None, should_pause=None):
                 notify('loading', index)
                 args.on_download = lambda filename: notify('downloading', index, asset=filename)
                 engine = KokoroEngine(args) if args.engine == 'kokoro' else QwenEngine(args)
+            notify('synthesis', index, device=getattr(engine, 'device', args.device),
+                   deviceName=getattr(engine, 'device_name', None))
             print(f'Generating {index + 1}/{len(chunks)}: {chunk["text"][:65]}', flush=True)
+            synthesis_started = time.monotonic()
             expected, spans = engine.synthesize(chunk, wav)
+            synthesis_seconds += time.monotonic() - synthesis_started
+            fresh_words += len(chunk['tokens'])
+            fresh_chunks += 1
             record = {'durationMs': wav_duration(wav), 'expected': expected, 'spans': spans, 'sha256': checksum(wav)}
             atomic_json(metadata, record)
         else:
             print(f'Resuming {index + 1}/{len(chunks)} from cache', flush=True)
         clips.append((chunk, wav, record))
+        completed_words += len(chunk['tokens'])
+        audio_seconds += record['durationMs'] / 1000
         if record['spans'] is None:
             pending.append((wav, metadata, record))
         notify('synthesis', index + 1)

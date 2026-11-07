@@ -39,8 +39,8 @@ function check(label,value){assert.ok(value,label);console.log('PASS '+label);co
   await page.waitForFunction(()=>!document.querySelector('#preview-voice').disabled);
   check('cancel preview unlocks both actions',jobs[0].status==='cancelled'&&!await page.isDisabled('#generate'));
   await page.click('#generate');await page.waitForSelector('[data-pause]');await page.waitForFunction(()=>document.querySelector('#voice').disabled);
-  check('full generation locks narrator settings and retains pause',await page.isDisabled('#speed')&&await page.locator('[data-pause]').count()===1&&!await page.isVisible('#cancel-preview'));
-  await page.click('[data-pause]');await page.waitForFunction(()=>!document.querySelector('#voice').disabled);
+  check('full generation locks narrator settings and retains pause',await page.isDisabled('#speed')&&await page.locator('#generation-progress [data-pause]').count()===1&&!await page.isVisible('#cancel-preview'));
+  await page.click('#generation-progress [data-pause]');await page.waitForFunction(()=>!document.querySelector('#voice').disabled);
   offline=true;await page.waitForFunction(()=>document.querySelector('#engine-state').textContent==='Local engine offline');
   check('disconnect disables actions with a reason',await page.isDisabled('#generate')&&/disconnected/.test(await page.textContent('#action-status')));
   offline=false;await page.waitForFunction(()=>!document.querySelector('#generate').disabled);
