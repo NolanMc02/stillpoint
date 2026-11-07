@@ -20,7 +20,7 @@ def main():
         run([sys.executable, '-m', 'venv', ROOT / '.venv-kokoro'])
     run([python, '-m', 'pip', 'install', '--upgrade', 'pip'])
     # Official PyTorch CUDA 12.4 Windows wheel; the CUDA toolkit is not built here.
-    run([python, '-m', 'pip', 'install', 'torch==2.6.0', '--index-url', 'https://download.pytorch.org/whl/cu124'])
+    run([python, '-m', 'pip', 'install', '--upgrade', 'torch==2.6.0', '--index-url', 'https://download.pytorch.org/whl/cu124'])
     run([python, '-m', 'pip', 'install', '-r', ROOT / 'tools/audiobook/requirements-kokoro.txt'])
     env = os.environ.copy()
     env['HF_HOME'] = str(ROOT / '.studio-models')
