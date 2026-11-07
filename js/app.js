@@ -413,7 +413,9 @@ function showAdd() {
     <label class="menu-btn" for="file-pick" style="cursor:pointer">Choose files
       <small>EPUB, PDF, DOCX, TXT, Markdown, HTML, RTF, MOBI, and FB2</small></label>
     <input id="file-pick" type="file" multiple style="position:absolute;opacity:0;width:1px;height:1px">
+    <button class="menu-btn" id="try-audiobook-demo">Try audiobook sample<small>Loads a short book with its narration</small></button>
     <button class="menu-btn" id="paste-go">Paste text</button></div>`);
+  $('#try-audiobook-demo', sheet).onclick = () => location.assign(new URL('demo/', location.href));
   $('#file-pick', sheet).onchange = e => {
     const files = [...e.target.files];
     closeSheet();
