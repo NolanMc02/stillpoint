@@ -59,6 +59,17 @@ async function packageFor(job) {
       window.__setHidden = hidden => { window.__testHidden = hidden; document.dispatchEvent(new Event('visibilitychange')); };
     });
     const page = await context.newPage();
+    const readFromHere = async index => {
+      await page.locator(`#flow-inner [data-i="${index}"]`).dispatchEvent('pointerdown', {
+        pointerId: 71, pointerType: 'touch', button: 0, clientX: 120, clientY: 300,
+      });
+      await page.waitForSelector('[data-a="start"]');
+      await page.locator('#reader').dispatchEvent('pointerup', { pointerId: 71, pointerType: 'touch', clientX: 120, clientY: 300 });
+      await page.click('[data-a="start"]');
+      await page.waitForFunction(i => __stillpoint.R.pos === i && __stillpoint.R.state === 'paused', index);
+      await page.waitForTimeout(400);
+      return page.evaluate(i => __stillpoint.R.pos === i && __stillpoint.R.state === 'paused' && __stillpoint.R.narration.audio.paused, index);
+    };
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
     await page.route('**/*', async route => {
@@ -158,8 +169,16 @@ async function packageFor(job) {
     const paused = await page.evaluate(() => __stillpoint.R.pos);
     await page.waitForTimeout(450);
     check('pause stops audio and word advancement', await page.evaluate(pos => __stillpoint.R.pos === pos && __stillpoint.R.narration.audio.paused, paused));
+    check('Read from here seeks narration and waits for Play', await readFromHere(8));
+    check('native text selection and callout are suppressed', await page.evaluate(() => {
+      const word = document.querySelector('#flow-inner .w');
+      return !word.dispatchEvent(new Event('selectstart', { bubbles: true, cancelable: true }))
+        && !word.dispatchEvent(new Event('contextmenu', { bubbles: true, cancelable: true }));
+    }));
     await page.click('#r-audio');
     await page.selectOption('#narration-mode', 'rsvp');
+    check('reading mode is the first control in the audiobook menu', await page.evaluate(() =>
+      document.querySelector('#narration-mode').closest('.sheet-body').firstElementChild.contains(document.querySelector('#narration-mode'))));
     await page.selectOption('#narration-rate', '1.5');
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'audiobook-controls.png') });
     await page.click('[data-close]');
@@ -193,6 +212,7 @@ async function packageFor(job) {
     await page.waitForFunction(() => __stillpoint.R.state === 'paused');
     check('independent RSVP still pauses when hidden', await page.evaluate(() => __stillpoint.R.state === 'paused'));
     await page.evaluate(() => __setHidden(false));
+    check('Read from here also leaves independent RSVP paused', await readFromHere(2));
     check('turning narration off releases system media controls', await page.evaluate(() => navigator.mediaSession.metadata === null && !__mediaActions.play));
     await page.click('#r-back');
     // Audio saved by the first release has an empty type. Reopening must repair it

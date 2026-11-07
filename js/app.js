@@ -733,19 +733,24 @@ async function showNarration(book) {
     try {
       validateManifest(record.manifest, job); valid = true;
       message = record.manifest.clips.length === 1
-        ? 'Audiobook saved on this device. Start playback before locking your screen. Choose how to follow the narration below.'
+        ? 'Audiobook saved on this device. Start playback before locking your screen.'
         : 'This older audiobook uses separate clips. Regenerate it as continuous audio for screen-off listening.';
     }
     catch (error) { message = error.message; }
   }
   const sheet = openSheet('Audiobook', `<div class="sheet-body stack">
+    ${valid ? `<section class="narration-mode-panel" aria-label="Reading mode">
+      <label for="narration-mode">Reading mode</label>
+      <select class="field-text" id="narration-mode" aria-describedby="narration-mode-help">
+        <option value="off">Read without narration</option><option value="page">Listen and follow text</option><option value="rsvp">Listen and follow RSVP</option>
+      </select>
+      <p id="narration-mode-help">Choose how you want to read or listen.</p>
+    </section>
+    <label for="narration-rate">Playback speed</label><select class="field-text" id="narration-rate">${[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(n => `<option value="${n}">${n}×</option>`).join('')}</select>` : ''}
     <p class="muted" id="narration-status">${esc(message)}</p>
     <button class="menu-btn" id="narration-export">Export narration job<small>Uses your current reading-text choices</small></button>
     <label class="menu-btn" for="narration-import">Import audiobook<small>Choose the generated audiobook ZIP</small></label>
     <input type="file" id="narration-import" accept=".zip,application/zip" hidden>
-    ${valid ? `<label for="narration-mode">Reading mode</label><select class="field-text" id="narration-mode">
-      <option value="off">Read without narration</option><option value="page">Listen and follow text</option><option value="rsvp">Listen and follow RSVP</option></select>
-      <label for="narration-rate">Playback speed</label><select class="field-text" id="narration-rate">${[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(n => `<option value="${n}">${n}×</option>`).join('')}</select>` : ''}
     ${record ? '<button class="menu-btn danger" id="narration-remove">Remove audiobook</button>' : ''}
     </div>`);
   $('#narration-export', sheet).onclick = async () => {
@@ -1536,7 +1541,7 @@ function showWordMenu(i) {
     <button class="menu-btn" data-a="mark">Add a bookmark here</button></div>`);
   sheet.onclick = e => {
     const action = e.target.closest('[data-a]')?.dataset.a;
-    if (action === 'start') { closeSheet(); seek(i); play({ fromSeek: true }); }
+    if (action === 'start') { closeSheet(); pause({ animate: false }); seek(i); }
     if (action === 'mark') { closeSheet(); addBookmark(i); }
   };
 }
@@ -2333,6 +2338,14 @@ async function showStats() {
 }
 
 /* ---------- App lifecycle ---------- */
+document.addEventListener('selectstart', event => {
+  const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+  if (!target?.closest('input, textarea, [contenteditable="true"]')) event.preventDefault();
+});
+document.addEventListener('contextmenu', event => {
+  const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+  if (!target?.closest('input, textarea, [contenteditable="true"]')) event.preventDefault();
+});
 document.addEventListener('keydown', e => {
   if (!R || activeScrim() || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
   if (e.key === ' ') { e.preventDefault(); togglePlay(); }

@@ -25,6 +25,8 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); 
 body { font: 16px/1.4 var(--ui); -webkit-text-size-adjust: 100%; overflow: hidden; position: fixed; inset: 0; }
 #app { position: absolute; inset: 0; }
 button, input, select, textarea { font: inherit; color: inherit; }
+body, body * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+input, textarea, [contenteditable="true"], [contenteditable="true"] * { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
 button { background: none; border: 0; padding: 0; cursor: pointer; touch-action: manipulation; }
 :focus-visible { outline: 2px solid var(--hi); outline-offset: 2px; }
 svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; display: block; }
@@ -163,6 +165,10 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 .menu-btn:last-child { border-bottom: 0; }
 .menu-btn small { display: block; color: var(--dim); font-size: 14px; margin-top: 1px; }
 .field-text { width: 100%; background: var(--panel); border: 0; border-radius: 12px; padding: 12px 14px; font-size: 16px; }
+.narration-mode-panel { padding: 18px; border: 1.5px solid var(--hi); border-radius: 16px; background: var(--panel); }
+.narration-mode-panel label { display: block; font-size: 19px; font-weight: 650; margin-bottom: 12px; }
+.narration-mode-panel select { background: var(--bg); font-size: 17px; font-weight: 600; min-height: 52px; }
+.narration-mode-panel p { margin: 10px 0 0; color: var(--dim); font-size: 14px; }
 textarea.field-text { min-height: 180px; resize: vertical; font-family: var(--serif); line-height: 1.45; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .row-btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
