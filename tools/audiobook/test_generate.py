@@ -19,6 +19,53 @@ def job_for(texts):
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_untimed_contraction_fragment_uses_only_its_own_display_word(self):
+        for word, suffix in [("don't", "n't"), ('don’t', 'n’t'), ("we're", "'re"), ("she's", "'s")]:
+            prefix = 'do' if word.startswith('do') else 'we' if word.startswith('we') else 'she'
+            for begin, end in [(None, None), (200, 200)]:
+                spans = [{'text': prefix, 'startMs': 100, 'endMs': 200},
+                         {'text': suffix, 'startMs': begin, 'endMs': end},
+                         {'text': 'ready', 'startMs': 300, 'endMs': 500}]
+                result = map_spans([word, 'ready'], spans, 600)
+                self.assertEqual(result[0], {'startMs': 100, 'endMs': 200, 'status': 'contraction-group'})
+                self.assertEqual(result[1], {'startMs': 300, 'endMs': 500})
+        spans = [{'text': 'do', 'startMs': 100, 'endMs': 200}, {'text': "n't", 'startMs': None, 'endMs': None}]
+        with self.assertRaisesRegex(ValueError, 'Missing or invalid'):
+            map_spans(['do', "n't"], spans, 300)
+        for begin, end in [(float('nan'), 200), (200, 100), (None, 200)]:
+            spans[1].update(startMs=begin, endMs=end)
+            with self.assertRaisesRegex(ValueError, 'Missing or invalid'):
+                map_spans(["don't"], spans, 300)
+
+    def test_alignment_failure_is_early_and_cached_audio_can_be_repaired(self):
+        calls = []
+        class Engine:
+            def __init__(self, args): pass
+            def synthesize(self, chunk, output):
+                calls.append(chunk['text'])
+                with wave.open(str(output), 'wb') as audio:
+                    audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(24000)
+                    audio.writeframes(b'\0\0' * 24000)
+                if chunk['text'] == "Don't stop.":
+                    return [t['w'] for t in chunk['tokens']], [
+                        {'text': 'Do', 'startMs': 0, 'endMs': 100},
+                        {'text': "n't", 'startMs': None, 'endMs': None},
+                        {'text': 'stop.', 'startMs': 200, 'endMs': 300}]
+                return [t['w'] for t in chunk['tokens']], [{'text': t['w'], 'startMs': i * 100, 'endMs': (i + 1) * 100} for i, t in enumerate(chunk['tokens'])]
+        args = argparse.Namespace(engine='kokoro', voice='af_heart', model=None, speed=1, device='cpu', max_chars=300, audio_format='wav')
+        with tempfile.TemporaryDirectory() as directory, patch('engines.KokoroEngine', Engine):
+            output = Path(directory) / 'book.zip'; job = job_for(["Don't stop.", 'Keep reading.'])
+            with patch('generate.map_spans', side_effect=ValueError('Missing or invalid alignment')):
+                with self.assertRaisesRegex(ValueError, 'Passage 1 of 2'):
+                    generate(job, output, args)
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(output.exists())
+            generate(job, output, args)
+            self.assertEqual(calls.count("Don't stop."), 1)
+            self.assertTrue(output.exists())
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(json.loads(archive.read('audiobook.json'))['clips'][0]['words'][0]['status'], 'contraction-group')
+
     def test_progress_write_recovers_from_a_brief_windows_file_lock(self):
         original = Path.replace
         attempts = []

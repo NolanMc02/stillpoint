@@ -152,7 +152,7 @@ function renderGenerationProgress(jobs) {
   const voice = connection.voices.find(v => v.id === job.voice)?.name;
   const headline = job.status === 'ready' ? 'Your audiobook is ready' : job.status === 'paused' ? 'Generation paused'
     : job.status === 'error' ? 'Generation needs attention' : phaseLabels[job.phase] || 'Generating your audiobook';
-  const percentage = job.status === 'ready' ? '100%' : info.finalizing ? 'Finalizing' : info.indeterminate ? 'Preparing' : `${info.percent}%`;
+  const percentage = job.status === 'ready' ? '100%' : job.status === 'error' ? 'Not finished' : info.finalizing ? 'Finalizing' : info.indeterminate ? 'Preparing' : `${info.percent}%`;
   const eta = job.status === 'ready' ? 'Ready to download' : job.status === 'paused' ? 'Completed passages are saved'
     : info.finalizing ? 'Preparing the audio file; time varies with book length'
     : info.eta !== null ? `About ${duration(info.eta)} of narration remaining · packaging follows`

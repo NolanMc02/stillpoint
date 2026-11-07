@@ -26,6 +26,8 @@ const check=(label,value)=>{assert.ok(value,label);console.log('PASS '+label);co
  check('completion offers the generated file',await page.locator('#generation-progress a').getAttribute('href')===`/api/jobs/${job.id}/download`);
  await page.goto('http://localhost:8765/studio/?progress=1');await page.waitForSelector('#generation-progress:not([hidden])');
  check('dedicated progress view needs no EPUB and preserves the main workspace',!await page.locator('.workspace').isVisible()&&await page.locator('#full-studio').isVisible());
+ job={...job,status:'error',phase:'error',error:'Passage 4 of 10: alignment needs attention'};await page.waitForFunction(()=>document.querySelector('.generation-percent').textContent==='Not finished');
+ check('a validation failure never labels the audiobook complete',await page.locator('#generation-progress a').count()===0&&/alignment needs attention/.test(await page.textContent('#generation-progress')));
  check('no progress interface errors',errors.length===0);console.log(count+' Studio progress checks passed');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1)});

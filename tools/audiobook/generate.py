@@ -87,6 +87,23 @@ def letters(text):
     return ''.join(c for c in unicodedata.normalize('NFKC', text).casefold() if c.isalnum())
 
 
+def contraction_fragment(text):
+    text = unicodedata.normalize('NFKC', text).casefold().translate(str.maketrans({'’': "'", '‘': "'", 'ʼ': "'"}))
+    return text if re.fullmatch(r"(?:n't|'(?:s|re|ve|ll|d|m|t))", text) else None
+
+
+def valid_span(begin, end):
+    return (isinstance(begin, (int, float)) and isinstance(end, (int, float))
+            and math.isfinite(begin) and math.isfinite(end) and end > begin)
+
+
+def untimed_contraction(text, begin, end, duration_ms):
+    return bool(contraction_fragment(text)) and (
+        (begin is None and end is None) or
+        (isinstance(begin, (int, float)) and isinstance(end, (int, float))
+         and math.isfinite(begin) and math.isfinite(end) and 0 <= begin == end <= duration_ms))
+
+
 def map_spans(expected, spans, duration_ms):
     """Map overlapping character ranges, supporting one-to-many speech expansions.
 
@@ -102,9 +119,9 @@ def map_spans(expected, spans, duration_ms):
         size = len(letters(span['text']))
         if size:
             begin, end = span.get('startMs'), span.get('endMs')
-            if not isinstance(begin, (int, float)) or not isinstance(end, (int, float)) or not math.isfinite(begin) or not math.isfinite(end) or end <= begin:
+            if not valid_span(begin, end) and not untimed_contraction(span['text'], begin, end, duration_ms):
                 raise ValueError(f'Missing or invalid alignment for {span["text"]!r}.')
-            indexed.append((cursor, cursor + size, begin, end))
+            indexed.append((cursor, cursor + size, begin, end, span['text']))
         cursor += size
     result = []
     cursor = 0
@@ -126,11 +143,19 @@ def map_spans(expected, spans, duration_ms):
             i += 1
         if not matches:
             raise ValueError(f'No alignment found for {word!r}.')
-        begin = max(0, min(duration_ms, round(matches[0][2], 3)))
-        end = max(0, min(duration_ms, round(matches[-1][3], 3)))
+        timed = [span for span in matches if valid_span(span[2], span[3])]
+        incomplete = [span for span in matches if not valid_span(span[2], span[3])]
+        normalized_word = unicodedata.normalize('NFKC', word).casefold().translate(str.maketrans({'’': "'", '‘': "'", 'ʼ': "'"}))
+        # A zero-duration clitic can share the enclosing contraction's acoustic
+        # interval. Never borrow a neighbour's timing for an unaligned whole word.
+        if not timed or any(not (cursor <= span[0] and span[1] <= stop
+                                 and contraction_fragment(span[4]) in normalized_word) for span in incomplete):
+            raise ValueError(f'Missing or invalid alignment for {word!r}.')
+        begin = max(0, min(duration_ms, round(timed[0][2], 3)))
+        end = max(0, min(duration_ms, round(timed[-1][3], 3)))
         if begin < previous or end <= begin:
             raise ValueError(f'Invalid timing range for {word!r}.')
-        result.append({'startMs': begin, 'endMs': end})
+        result.append({'startMs': begin, 'endMs': end, **({'status': 'contraction-group'} if incomplete else {})})
         previous = begin
         cursor = stop
     for i, timing in enumerate(result):
@@ -307,6 +332,14 @@ def generate(job, output, args, progress=None, should_pause=None):
             atomic_json(metadata, record)
         else:
             print(f'Resuming {index + 1}/{len(chunks)} from cache', flush=True)
+        if record['spans'] is not None:
+            try:
+                if args.engine == 'kokoro' and record['expected'] != [t['w'] for t in chunk['tokens']]:
+                    raise ValueError('Cached narration words differ from the reading passage.')
+                if len(map_spans(record['expected'], record['spans'], record['durationMs'])) != len(chunk['tokens']):
+                    raise ValueError('Alignment does not cover every reading token.')
+            except ValueError as error:
+                raise ValueError(f'Passage {index + 1} of {len(chunks)}: {error}') from error
         clips.append((chunk, wav, record))
         completed_words += len(chunk['tokens'])
         audio_seconds += record['durationMs'] / 1000
