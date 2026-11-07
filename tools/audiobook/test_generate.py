@@ -8,7 +8,7 @@ from unittest.mock import patch
 import wave
 import zipfile
 
-from generate import combine_clips, digest, generate, map_spans, split_job, validate_job
+from generate import GenerationPaused, combine_clips, digest, generate, map_spans, split_job, validate_job
 
 
 def job_for(texts):
@@ -19,6 +19,29 @@ def job_for(texts):
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_pause_preserves_completed_passages_for_resume(self):
+        calls = []
+        class Engine:
+            def __init__(self, args): pass
+            def synthesize(self, chunk, output):
+                calls.append(chunk['text'])
+                with wave.open(str(output), 'wb') as audio:
+                    audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(24000)
+                    audio.writeframes(b'\0\0' * 24000)
+                return [t['w'] for t in chunk['tokens']], [{'text': t['w'], 'startMs': i * 150, 'endMs': (i + 1) * 150} for i, t in enumerate(chunk['tokens'])]
+        args = argparse.Namespace(engine='kokoro', voice='af_heart', model=None, speed=1, device='cpu', max_chars=300, audio_format='wav')
+        events = []
+        def pause_after_first(info): events.append(info)
+        with tempfile.TemporaryDirectory() as directory, patch('engines.KokoroEngine', Engine):
+            output = Path(directory) / 'book.zip'; job = job_for(['First passage.', 'Second passage.'])
+            with self.assertRaises(GenerationPaused):
+                generate(job, output, args, progress=pause_after_first,
+                         should_pause=lambda: any(e['phase'] == 'synthesis' and e['completed'] == 1 for e in events))
+            self.assertEqual(len(calls), 1); self.assertFalse(output.exists())
+            result = generate(job, output, args)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(result['clips'][0]['words']), 4)
+
     def test_job_detects_changed_tokens_and_duplicate_passages(self):
         job = job_for(['One two.', 'Three four.'])
         validate_job(job)

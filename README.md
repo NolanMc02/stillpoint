@@ -1,8 +1,10 @@
 # Stillpoint
 
-A private RSVP speed reader for iPhone. Books stay on your device.
+A private reader for iPhone with RSVP, reflowable pages, continuous scrolling, and synchronized local audiobooks. Books stay on your device.
 
-Local audiobook prototype: open **Audiobook** from a book's menu or the reader's speaker button. Export the reviewed text, generate narration on your computer, and import the resulting ZIP for synchronized text or RSVP playback. Setup, the interchange format, and current limits are documented in [tools/audiobook/README.md](tools/audiobook/README.md).
+Use the **book icon** in the reader to switch between Book and RSVP views. In Book view, **Aa** offers pages or continuous scrolling, fonts, text size, boldness, spacing, margins, alignment, themes, page dimming, and progress display. Swipe or tap page edges to turn; tap the center to show or hide controls. Reading position is shared with RSVP and narration. Native text selection, highlights, and notes are disabled. Only Play starts an RSVP session.
+
+**Audiobook Studio** is a local desktop interface: choose an EPUB, review its text and chapters, preview a narrator, generate with progress and pause/resume, and download one ZIP containing the book, audio, and word timings. On the phone, use **Add a book → Choose files** to import that ZIP. Open `Open Audiobook Studio.command` on a configured Mac or `Open Audiobook Studio.cmd` on a configured Windows PC. One-time setup, the CLI alternative, and current limits are documented in [tools/audiobook/README.md](tools/audiobook/README.md).
 
 Open the site in Safari, tap Share, then Add to Home Screen.
 

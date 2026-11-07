@@ -3,3 +3,5 @@ node_modules/
 __pycache__/
 .venv*/
 *.work/
+.studio-jobs/
+.studio-models/

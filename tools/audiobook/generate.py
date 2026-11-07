@@ -18,6 +18,10 @@ TOKENIZER = 'stillpoint-v1'
 PIPELINE_VERSION = 1
 
 
+class GenerationPaused(Exception):
+    """A requested stop at a resumable passage boundary."""
+
+
 def compact(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
 
@@ -209,7 +213,7 @@ def combine_clips(clips, destination, engine):
     return {'durationMs': frames * 1000 / parameters[2], 'words': words}
 
 
-def generate(job, output, args):
+def generate(job, output, args, progress=None, should_pause=None):
     from engines import KokoroEngine, QwenEngine
     job = validate_job(job)
     chunks = list(split_job(job, args.max_chars))
@@ -221,7 +225,15 @@ def generate(job, output, args):
     pending = []
     clips = []
     started = time.monotonic()
+    def notify(phase, completed=0, total=len(chunks), **extra):
+        if progress:
+            progress({'phase': phase, 'completed': completed, 'total': total, 'elapsedSeconds': round(time.monotonic() - started, 1), **extra})
+    def checkpoint():
+        if should_pause and should_pause():
+            raise GenerationPaused()
     for index, chunk in enumerate(chunks):
+        checkpoint()
+        notify('synthesis', index, passage=chunk['text'][:160])
         key = digest([config, chunk])
         wav = cache / f'{key}.wav'
         metadata = cache / f'{key}.json'
@@ -235,6 +247,7 @@ def generate(job, output, args):
                 pass
         if record is None:
             if engine is None:
+                notify('loading', index)
                 engine = KokoroEngine(args) if args.engine == 'kokoro' else QwenEngine(args)
             print(f'Generating {index + 1}/{len(chunks)}: {chunk["text"][:65]}', flush=True)
             expected, spans = engine.synthesize(chunk, wav)
@@ -245,6 +258,7 @@ def generate(job, output, args):
         clips.append((chunk, wav, record))
         if record['spans'] is None:
             pending.append((wav, metadata, record))
+        notify('synthesis', index + 1)
     # Keep only one large model resident, including on an 8 GB GPU.
     del engine
     gc.collect()
@@ -253,6 +267,8 @@ def generate(job, output, args):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     if pending:
+        checkpoint()
+        notify('alignment', len(chunks))
         # Upstream qwen-tts and qwen-asr pin incompatible Transformers versions.
         # An isolated aligner process also guarantees synthesis GPU memory is released.
         request = cache / 'alignment-request.json'
@@ -264,7 +280,10 @@ def generate(job, output, args):
     manifest = {'format': 'stillpoint-audiobook', 'version': 1, 'tokenizer': TOKENIZER,
                 'textHash': job['textHash'], 'book': job['book'], 'generator': config, 'clips': []}
     continuous = cache / 'continuous.wav'
+    checkpoint()
+    notify('assembly', len(chunks))
     timing = combine_clips(clips, continuous, args.engine)
+    notify('encoding', len(chunks))
     encoded = package_audio(continuous, args.audio_format)
     filename = f'audio/clip-00000.{args.audio_format}'
     manifest['playback'] = 'continuous'
@@ -285,6 +304,7 @@ def generate(job, output, args):
               'generationSecondsPerAudioSecond': round(elapsed / duration, 3)}
     atomic_json(output.with_suffix('.report.json'), report)
     print(f'Saved {output}\n{json.dumps(report, indent=2)}')
+    notify('complete', len(chunks), audioSeconds=duration)
     return manifest
 
 

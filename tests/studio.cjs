@@ -1,0 +1,68 @@
+// Real local inference integration. Start tools/audiobook/studio.py on port 8765 first.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { chromium, devices } = require('playwright');
+const JSZip = require('jszip');
+const origin = process.env.STUDIO_ORIGIN || 'http://localhost:8765';
+let count = 0;
+const check = (label, value) => { assert.ok(value, label); console.log(`PASS ${label}`); count++; };
+(async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
+  try {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 1000 }, acceptDownloads: true, serviceWorkers: 'block', reducedMotion: 'reduce' });
+    const page = await context.newPage(), errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    await page.goto(`${origin}/studio/`);
+    const ready = id => page.waitForFunction(async id => {
+      const job = await (await fetch(`/api/jobs/${id}`)).json();
+      if (job.status === 'error') throw new Error(job.error);
+      return job.status === 'ready';
+    }, id, { timeout: 600000 });
+    await page.waitForFunction(() => document.querySelector('#engine-state').textContent === 'Local engine ready');
+    await page.setInputFiles('#epub-file', process.env.SAMPLE_EPUB);
+    await page.waitForSelector('#book-details:not([hidden])');
+    check('Studio opens an EPUB with the shared reading importer', (await page.textContent('#book-title')).includes('A Morning by the River'));
+    await page.click('#review-toggle');
+    check('the reviewed passages are available before narration', await page.locator('#passages .passage').count() > 0);
+    await page.click('#review-toggle');
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'audiobook-studio.png'), fullPage: true });
+    await page.selectOption('#voice', 'af_heart');
+    const previewCreated = page.waitForResponse(response => response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
+    await page.click('#preview-voice');
+    await ready((await (await previewCreated).json()).id);
+    await page.waitForSelector('#voice-player:not([hidden])', { timeout: 600000 });
+    await page.waitForFunction(() => document.querySelector('#voice-player').duration > 0);
+    check('voice preview produces real playable local audio', await page.locator('#voice-player').evaluate(a => a.duration > 3));
+    await page.waitForFunction(() => !document.querySelector('#generate').disabled);
+    const created = page.waitForResponse(response => response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
+    await page.click('#generate');
+    const generation = await (await created).json();
+    await ready(generation.id);
+    const downloadSelector = `a[href="/api/jobs/${generation.id}/download"]`;
+    await page.waitForSelector(downloadSelector, { timeout: 600000 });
+    const download = page.waitForEvent('download');
+    await page.locator(downloadSelector).click();
+    const downloaded = await download;
+    const filename = process.env.STUDIO_OUTPUT || await downloaded.path();
+    if (process.env.STUDIO_OUTPUT) await downloaded.saveAs(filename);
+    const archive = await JSZip.loadAsync(fs.readFileSync(filename));
+    check('one export contains both reading text and narration', !!archive.file('reading-book.json') && !!archive.file('audiobook.json') && !!archive.file('narration-job.json'));
+    const book = JSON.parse(await archive.file('reading-book.json').async('string'));
+    const manifest = JSON.parse(await archive.file('audiobook.json').async('string'));
+    check('generated narration is a continuous audio track with complete timings', manifest.playback === 'continuous' && manifest.clips.length === 1 && manifest.clips[0].words.length > 20);
+    const reader = await context.newPage();
+    reader.on('pageerror', e => errors.push(e.message));
+    await reader.goto(`${origin}/`);
+    await reader.waitForSelector('#empty-add'); await reader.click('#empty-add');
+    await reader.setInputFiles('#file-pick', filename);
+    await reader.waitForSelector('.book-viewport');
+    check('a single package import adds the reviewed book and its audio', await reader.evaluate(() => __stillpoint.R.book.readingView === 'book' && !!__stillpoint.R.narration));
+    check('imported text matches the Studio review', await reader.evaluate(text => __stillpoint.R.blocks[0].t === text, book.content.blocks[0].t));
+    await reader.click('#play'); await reader.waitForFunction(() => __stillpoint.R.state === 'playing' && __stillpoint.R.narration.audio.currentTime > .5);
+    check('generated audio drives the paged book reader', await reader.evaluate(() => __stillpoint.R.pos > 0 && !!document.querySelector('.bw.current')));
+    await reader.click('#play');
+    check('no Studio or reader application errors', errors.length === 0);
+    console.log(`${count} Studio integration checks passed`);
+  } finally { await browser.close(); }
+})().catch(error => { console.error(error); process.exit(1); });

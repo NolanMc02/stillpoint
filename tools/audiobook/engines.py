@@ -12,12 +12,21 @@ def device_for(requested):
 
 class KokoroEngine:
     def __init__(self, args):
-        from kokoro import KPipeline
+        from kokoro import KModel, KPipeline
+        from huggingface_hub import hf_hub_download, try_to_load_from_cache
         self.args = args
         if not args.voice.startswith(('a', 'b')):
             raise ValueError('This prototype supports American and British English Kokoro voices.')
-        self.pipeline = KPipeline(lang_code=args.voice[0], device=device_for(args.device),
-                                  repo_id=args.model or 'hexgrad/Kokoro-82M')
+        repo = args.model or 'hexgrad/Kokoro-82M'
+        def local_first(filename):
+            cached = try_to_load_from_cache(repo, filename)
+            return cached if isinstance(cached, str) else hf_hub_download(repo_id=repo, filename=filename)
+        # Cached voices must not wait on a network metadata check to work offline.
+        model = KModel(repo_id=repo, config=local_first('config.json'),
+                       model=local_first(KModel.MODEL_NAMES.get(repo, 'kokoro-v1_0.pth')))
+        model = model.to(device_for(args.device)).eval()
+        self.pipeline = KPipeline(lang_code=args.voice[0], model=model, repo_id=repo)
+        self.pipeline.voices[args.voice] = self.pipeline.load_single_voice(local_first(f'voices/{args.voice}.pt'))
 
     def synthesize(self, chunk, output):
         import numpy as np

@@ -2,6 +2,22 @@
 
 This prototype generates English narration on your computer and imports it into Stillpoint for synchronized listening, scrolling text, and RSVP. It uses the exact reviewed text and tokenizer from the reader. Generation can run on a different computer from playback.
 
+## Audiobook Studio
+
+Studio is the desktop generation interface. Once the Kokoro environment below is installed, double-click **Open Audiobook Studio.command** (Mac) or **Open Audiobook Studio.cmd** (Windows) in the repository root. It opens `http://localhost:8765/studio/`. The local Python engine must stay running during generation. The launchers use `.venv-kokoro`; the configured development Mac can also use its existing sibling `audio-venv` environment.
+
+1. Choose a DRM-free, reflowable EPUB.
+2. Review reading text and optionally choose chapters. Include or omit passages before generating.
+3. Choose a narrator and preview the voice. The first use may download weights.
+4. Generate the audiobook. Progress is saved per passage; Pause finishes the current passage before stopping. Resume reuses verified completed passages.
+5. Download the result, transfer it to your phone, and import it through Stillpoint's **Add a book → Choose files**. One ZIP supplies both reading text and audio. Existing books are not replaced automatically.
+
+Closing the browser window does not stop the engine. Use **Close local engine** when finished; active generation pauses after its current passage. Reopening Studio restores job history. Source text, jobs, PCM caches, and output remain in `.studio-jobs/`; model downloads use `.studio-models/`. These directories are ignored by Git. Pause active jobs and close the engine before manually removing their saved files to recover disk space.
+
+Studio currently exposes Kokoro English voices. It automatically selects CUDA when available, otherwise CPU. The M1 Mac workflow has been exercised with real generation; the Windows launcher and CUDA path need testing on the actual PC. Qwen remains CLI-only and experimental. Studio binds to loopback, requires same-origin authenticated writes, and does not send book text to a cloud speech API. It is not a hosted generation service: the public GitHub Pages site runs the reader, while Studio needs the local Python engine.
+
+The reader's book icon opens the traditional Book view. **Aa → Layout** selects Pages or Continuous scroll. Font, size, boldness, spacing, margins, alignment, themes, page dimming, and progress display are configurable. Page counts refer to the current reflowed section, not a publisher's print edition. These are Kindle-style core reading controls; Amazon store/sync, dictionary, translation, and X-Ray integrations are not implemented. Highlights and notes remain disabled.
+
 ## Try the reader
 
 Serve the repository over localhost; opening `index.html` as a file will not work:
@@ -12,13 +28,13 @@ python3 -m http.server 8123 --bind 127.0.0.1
 
 Open `http://localhost:8123`. Import an EPUB and finish **Review reading text**. From the book's menu or the speaker button in the reader, open **Audiobook → Export narration job**. Transfer that JSON file to the generation computer.
 
-After generation, open the same book and choose **Audiobook → Import audiobook**. Select the generated ZIP. Choose **Listen and follow text**, **Listen and follow RSVP**, or **Read without narration**. Press play in the reader. In narration modes the speed controls adjust audio playback speed; the settings sheet also offers exact rates.
+After generation, open the same book and choose **Audiobook → Import audiobook**. Select the generated ZIP. Choose **Book · pages or scrolling** with **Listen along in book mode**, **Listen and follow text**, **Listen and follow RSVP**, or **Read without narration**. Press play in the reader. In narration modes the speed controls adjust audio playback speed; the settings sheet also offers exact rates.
 
 The existing word menu's **Read from here**, chapter navigation, search, bookmarks, rewind, and position slider use the shared reading position. Narration follows those jumps. Normal RSVP keeps its independent WPM pacing when narration is off.
 
 ## Kokoro: tested path
 
-Use Python 3.12 and a separate environment. The first run downloads model weights and an English language-processing model. Once those are cached, generation runs offline.
+Use Python 3.12 and a separate environment. The Kokoro requirements pin Transformers 4.51.3 and, on macOS, PyTorch 2.6.0 for a reproducible local engine. The newer PyTorch 2.15 / Transformers dependency chain stalled during local startup on this Mac. The Windows CUDA path still needs separate device testing. The first run downloads model weights and an English language-processing model. Once those are cached, generation runs offline.
 
 macOS or Linux, from the repository root:
 
@@ -95,6 +111,7 @@ ZIP contents:
 audiobook.json       # versioned manifest, source fingerprint, ordered clips and word times
 narration-job.json   # original reviewed text and tokens
 audio/clip-00000.m4a
+reading-book.json   # Studio book exports also contain reviewed text and cleanup choices
 ```
 
 Stillpoint validates the full word sequence before replacing a saved audiobook. Replacement uses one IndexedDB transaction. A changed cleanup selection currently disables the old narration and asks for a new export. Automatic passage skipping/reuse after cleanup is not implemented yet.
@@ -103,8 +120,8 @@ Stillpoint validates the full word sequence before replacing a saved audiobook. 
 
 - The reader retains metadata separately from audio and loads one audio clip at a time during playback. Package import still decompresses the whole ZIP; very large books need available memory and browser storage. Full-novel and iPhone Safari stress tests remain outstanding.
 - Audiobooks are included in normal backups by default. **Settings → Library and data** can omit them to reduce backup size. Removing a book removes its audio.
-- Narration now continues when the page is hidden, releases the screen wake lock, and exposes Media Session play/pause and seeking controls where supported. Visual updates stop in the background and the reader resynchronizes on return. Independent RSVP still pauses when hidden. Begin playback with a user gesture before locking the phone. Actual iPhone lock-screen playback still requires device verification; simulated visibility tests are not an OS suspension test.
-- Native iPhone Safari / Home Screen playback, AAC priming behavior, long-book voice consistency, and manual acoustic timing accuracy still need device testing. Headless desktop Chrome is the browser tested so far. The page must remain open: closing its tab or shutting down the phone ends playback.
+- Narration now continues when the page is hidden, releases the screen wake lock, and exposes Media Session play/pause and seeking controls where supported. Visual updates stop in the background and the reader resynchronizes on return. Independent RSVP still pauses when hidden. Begin playback with a user gesture before locking the phone. The user has confirmed working playback on their installed iPhone app after the Safari MIME fix. Interruption and long-book acceptance checks still need wider device testing.
+- AAC priming behavior, long-book voice consistency, large imports, and manual acoustic timing accuracy still need broader testing. Automated browser coverage includes Chrome and a WebKit media regression. The page must remain open: closing its tab or shutting down the phone ends playback.
 - New packages join source PCM before encoding, so there are no JavaScript-driven clip transitions during playback. Older packages with multiple clips still import, but should be regenerated for screen-off use.
 - No cloud speech API is used. Initial dependency/model downloads require internet access. Keep backups of locally stored books and generated packages.
 
@@ -125,6 +142,8 @@ npm install --no-save playwright jszip
 npx playwright install chromium
 node tests/narration.cjs
 node tests/cleanup.cjs
+node tests/book-reader.cjs
+node tests/updates.cjs
 ```
 
 Optional `CHROME_PATH` chooses an existing Chrome executable. `REAL_AUDIO` points to an audiobook ZIP generated from the exact test passage; `SAMPLE_JOB` exports that passage's job for a real generation test. `SHOTS` points to an existing screenshot directory. Tests use local request routing and do not need a server.
@@ -134,3 +153,5 @@ Upstream references: [Kokoro](https://github.com/hexgrad/kokoro), [Qwen3-TTS](ht
 ## Phone acceptance check
 
 Use a phone-accessible HTTPS deployment, not the Mac-only localhost demo. Test both Safari and the installed Home Screen app if you use both. Import a newly generated continuous audiobook and start playback. Lock the screen for several minutes, cross paragraph/chapter boundaries, test lock-screen play/pause and seek, and reopen the reader. Confirm audio continued and the highlighted word matches the current audio position. Repeat after an interruption such as a call or another audio app. Native background behavior is not guaranteed until these checks pass on the target device.
+
+For a real Studio integration test, start Studio on port 8765 and run `SAMPLE_EPUB=/path/to/sample-book.epub node tests/studio.cjs` with the supplied original sample EPUB. This test loads real model weights, generates audio, downloads the combined ZIP, and imports/plays it in the reader.
