@@ -90,6 +90,19 @@ export function saveNarration(bookId, manifest, audio) {
   });
 }
 
+export function saveGeneratedBook(book, content, manifest, audio) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['books', 'contents', 'narrations', 'narrationdata'], 'readwrite');
+    tx.objectStore('books').put(book);
+    tx.objectStore('contents').put(content);
+    tx.objectStore('narrations').put({ id: book.id, manifest });
+    for (const clip of audio) tx.objectStore('narrationdata').put({ id: `${book.id}:${clip.file}`, bookId: book.id, data: clip.data });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 export function removeNarration(bookId) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(['narrations', 'narrationdata'], 'readwrite');

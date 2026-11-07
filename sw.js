@@ -1,10 +1,11 @@
 // Keeps the app available offline. Books stay in on-device storage and never pass through here.
-const CACHE = 'stillpoint-v11';
+const CACHE = 'stillpoint-v12';
 const APP_FILES = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/app.js', 'js/engine.js', 'js/importers.js', 'js/pdfclean.js', 'js/bookclean.js', 'js/db.js', 'js/sounds.js', 'js/streaks.js',
   'js/narration.js',
   'js/updates.js',
+  'js/book-reader.js',
   'vendor/jszip.min.js', 'vendor/pdf.min.mjs', 'vendor/pdf.worker.min.mjs',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
@@ -30,6 +31,7 @@ self.addEventListener('fetch', event => {
   const { request } = event;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
+  if (url.origin === location.origin && url.pathname.startsWith(new URL('api/', self.registration.scope).pathname)) return;
   if (url.origin === 'https://cdn.jsdelivr.net') {
     event.respondWith((async () => {
       const cached = await caches.match(request.url);
