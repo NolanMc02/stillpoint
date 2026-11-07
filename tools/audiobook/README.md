@@ -8,7 +8,7 @@ Studio is the desktop generation interface. Once the Kokoro environment below is
 
 1. Choose a DRM-free, reflowable EPUB.
 2. Review reading text and optionally choose chapters. Include or omit passages before generating.
-3. Choose a narrator and preview the voice. The first use may download weights.
+3. Choose a narrator and preview the voice. The first use may download weights. A message beside the controls explains when a book is required, a voice is downloading, or another job is running. Change narrators or use **Cancel voice preview** to stop an unfinished preview; pause a full audiobook before starting a different voice job.
 4. Generate the audiobook. Progress is saved per passage; Pause finishes the current passage before stopping. Resume reuses verified completed passages.
 5. Download the result, transfer it to your phone, and import it through Stillpoint's **Add a book → Choose files**. One ZIP supplies both reading text and audio. Existing books are not replaced automatically.
 
@@ -155,3 +155,5 @@ Upstream references: [Kokoro](https://github.com/hexgrad/kokoro), [Qwen3-TTS](ht
 Use a phone-accessible HTTPS deployment, not the Mac-only localhost demo. Test both Safari and the installed Home Screen app if you use both. Import a newly generated continuous audiobook and start playback. Lock the screen for several minutes, cross paragraph/chapter boundaries, test lock-screen play/pause and seek, and reopen the reader. Confirm audio continued and the highlighted word matches the current audio position. Repeat after an interruption such as a call or another audio app. Native background behavior is not guaranteed until these checks pass on the target device.
 
 For a real Studio integration test, start Studio on port 8765 and run `SAMPLE_EPUB=/path/to/sample-book.epub node tests/studio.cjs` with the supplied original sample EPUB. This test loads real model weights, generates audio, downloads the combined ZIP, and imports/plays it in the reader.
+
+Studio uses the standard HTTPS model downloader by default after a first-use voice stalled in the Xet transfer backend. Cached files remain local and are reused. Advanced setups can override `HF_HUB_DISABLE_XET`; see the [upstream environment settings](https://huggingface.co/docs/huggingface_hub/en/package_reference/environment_variables). `tests/studio-controls.cjs` covers missing-book guidance, download states, voice switching/cancellation, generation locking, and reconnection.

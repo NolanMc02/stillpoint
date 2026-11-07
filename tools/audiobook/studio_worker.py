@@ -14,7 +14,7 @@ def main():
     directory = args.directory
     request = json.loads((directory / 'request.json').read_text(encoding='utf-8'))
     state = json.loads((directory / 'state.json').read_text(encoding='utf-8'))
-    state.update(id=directory.name, title=request['job']['book']['title'], kind=request.get('kind', 'book'), status='running')
+    state.update(id=directory.name, title=request['job']['book']['title'], kind=request.get('kind', 'book'), voice=request['voice'], status='running')
     def update(info):
         state.update(info)
         atomic_json(directory / 'state.json', state)

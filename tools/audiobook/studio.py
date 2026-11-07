@@ -72,6 +72,24 @@ class StudioServer(ThreadingHTTPServer):
                     [sys.executable, str(Path(__file__).with_name('studio_worker.py')), str(directory)],
                     stdout=log, stderr=log, env=env)
 
+    def cancel_preview(self, identifier):
+        with self.lock:
+            state = self.state(identifier)
+            if state.get('kind') != 'preview':
+                raise ValueError('Only voice previews can be cancelled. Pause an audiobook to keep its progress.')
+            process = self.processes.get(identifier)
+            if process and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            if state['status'] != 'ready':
+                state.update(status='cancelled', phase='cancelled', error=None)
+                atomic_json(self.jobs / identifier / 'state.json', state)
+            return state
+
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -203,11 +221,13 @@ class Handler(SimpleHTTPRequestHandler):
                     directory.mkdir()
                     atomic_json(directory / 'request.json', request)
                     atomic_json(directory / 'state.json', {'id': identifier, 'status': 'queued', 'phase': 'starting', 'createdAt': time.time(),
-                        'title': request['job']['book']['title'], 'kind': request.get('kind', 'book')})
+                        'title': request['job']['book']['title'], 'kind': request.get('kind', 'book'), 'voice': request['voice']})
                     self.server.start(identifier)
                 return self.json_response(self.server.state(identifier), 201)
             if path.startswith('/api/jobs/'):
                 identifier = self.identifier(path)
+                if path.endswith('/cancel'):
+                    return self.json_response(self.server.cancel_preview(identifier))
                 if path.endswith('/pause'):
                     (self.server.jobs / identifier / 'pause').touch()
                     return self.json_response({'status': 'pausing'})

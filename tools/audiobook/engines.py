@@ -1,5 +1,11 @@
 """Optional model adapters. Core validation and tests need no ML dependencies."""
 from generate import spoken_token
+import os
+
+# Use the normal HTTPS downloader: Xet stalled indefinitely on a first-use voice.
+# Set this before Kokoro imports huggingface_hub and its environment constants.
+os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
+os.environ.setdefault('HF_HUB_DOWNLOAD_TIMEOUT', '20')
 
 
 def device_for(requested):
@@ -20,7 +26,11 @@ class KokoroEngine:
         repo = args.model or 'hexgrad/Kokoro-82M'
         def local_first(filename):
             cached = try_to_load_from_cache(repo, filename)
-            return cached if isinstance(cached, str) else hf_hub_download(repo_id=repo, filename=filename)
+            if isinstance(cached, str):
+                return cached
+            if getattr(args, 'on_download', None):
+                args.on_download(filename)
+            return hf_hub_download(repo_id=repo, filename=filename)
         # Cached voices must not wait on a network metadata check to work offline.
         model = KModel(repo_id=repo, config=local_first('config.json'),
                        model=local_first(KModel.MODEL_NAMES.get(repo, 'kokoro-v1_0.pth')))

@@ -248,6 +248,7 @@ def generate(job, output, args, progress=None, should_pause=None):
         if record is None:
             if engine is None:
                 notify('loading', index)
+                args.on_download = lambda filename: notify('downloading', index, asset=filename)
                 engine = KokoroEngine(args) if args.engine == 'kokoro' else QwenEngine(args)
             print(f'Generating {index + 1}/{len(chunks)}: {chunk["text"][:65]}', flush=True)
             expected, spans = engine.synthesize(chunk, wav)

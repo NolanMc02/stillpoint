@@ -2,6 +2,8 @@ import http.client
 import json
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import threading
 import unittest
 import zipfile
@@ -77,6 +79,28 @@ class StudioTests(unittest.TestCase):
         self.assertEqual((state['status'], state['phase']), ('running', 'finishing'))
         self.server.processes.clear()
         self.assertEqual(self.server.state(self.identifier)['status'], 'ready')
+
+    def test_cancel_preview_releases_the_worker_immediately(self):
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+        self.server.processes[self.identifier] = process
+        atomic_json(self.directory / 'state.json', {'id': self.identifier, 'kind': 'preview', 'status': 'running'})
+        try:
+            status, _, data = self.request('POST', f'/api/jobs/{self.identifier}/cancel', '{}',
+                {'Content-Type': 'application/json', 'X-Stillpoint-Token': self.server.token})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(data)['status'], 'cancelled')
+            self.assertIsNotNone(process.poll())
+            self.assertTrue((self.directory / 'audiobook.zip').exists())
+        finally:
+            if process.poll() is None:
+                process.kill(); process.wait()
+
+    def test_cancel_cannot_discard_an_audiobook_job(self):
+        atomic_json(self.directory / 'state.json', {'id': self.identifier, 'kind': 'book', 'status': 'paused'})
+        status, _, _ = self.request('POST', f'/api/jobs/{self.identifier}/cancel', '{}',
+            {'Content-Type': 'application/json', 'X-Stillpoint-Token': self.server.token})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.server.state(self.identifier)['status'], 'paused')
 
 
 if __name__ == '__main__':

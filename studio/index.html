@@ -20,7 +20,9 @@
     <aside class="panel voice-panel"><div class="panel-heading"><span class="step">02</span><h2>The voice</h2></div>
       <label class="field-label" for="voice">Narrator</label><select id="voice"></select><p id="voice-description" class="hint"></p>
       <label class="field-label" for="speed">Narration pace <span id="speed-label">1.0×</span></label><input id="speed" type="range" min="0.75" max="1.25" value="1" step="0.05"><div class="range-labels"><span>Unhurried</span><span>Brisk</span></div>
-      <button id="preview-voice" class="secondary" disabled>▶ Preview this voice</button><audio id="voice-player" controls hidden></audio>
+      <button id="preview-voice" class="secondary" disabled>▶ Preview this voice</button>
+      <p id="action-status" class="hint" role="status" aria-live="polite">Choose an EPUB to preview a voice or generate an audiobook.</p>
+      <button id="cancel-preview" class="quiet" hidden>Cancel voice preview</button><audio id="voice-player" controls hidden></audio>
       <div class="generation-note"><strong>Made locally with Kokoro</strong><p>Voices download once, then work offline. Loading the voice engine can take a few minutes on first use.</p></div>
       <button id="generate" class="primary" disabled>Generate audiobook <span>↗</span></button><p class="hint centered">Includes the book, audio and word timings.</p>
     </aside>

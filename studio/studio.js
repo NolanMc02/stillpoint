@@ -8,8 +8,30 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;
 let connection = null, parsed = null, source = null, options = null, selectedChapters = new Set(), passagePage = 0;
 let chapterSelectionChanged = false;
 let activePreview = null, busy = false;
+let online = false, submitting = false, runningJob = null, bookWordCount = 0;
 let pollTimer;
 const notify = message => { $('#notice').hidden = !message; $('#notice').textContent = message || ''; };
+
+function updateActions() {
+  const waiting = busy || submitting;
+  const unavailable = !online || !connection?.ready || !parsed || !bookWordCount || waiting;
+  const voice = connection?.voices.find(v => v.id === $('#voice').value)?.name || 'this voice';
+  $('#generate').disabled = unavailable;
+  $('#preview-voice').disabled = unavailable;
+  $('#preview-voice').textContent = waiting && runningJob?.kind === 'preview' ? 'Preparing voice preview…' : '▶ Preview this voice';
+  $('#voice').disabled = submitting || (busy && runningJob?.kind !== 'preview');
+  $('#speed').disabled = waiting;
+  $('#cancel-preview').hidden = !online || !busy || runningJob?.kind !== 'preview';
+  let message = !online ? 'Local engine disconnected. Reopen Audiobook Studio to continue.'
+    : !connection?.ready ? 'The voice engine needs setup before it can narrate.'
+    : submitting ? 'Sending your text to the local voice engine…'
+    : runningJob?.kind === 'preview' ? `${phaseLabels[runningJob.phase] || 'Preparing voice preview'}. These buttons unlock when it finishes. You can change voices or cancel the preview.`
+    : busy ? 'Your audiobook is being generated. Pause it below before starting another voice job.'
+    : !parsed ? 'Choose an EPUB to preview a voice or generate an audiobook.'
+    : !bookWordCount ? 'Include at least one passage or chapter to continue.'
+    : `Ready to preview ${voice} or generate your audiobook.`;
+  if ($('#action-status').textContent !== message) $('#action-status').textContent = message;
+}
 
 async function api(path, payload) {
   const response = await fetch(path, payload ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Stillpoint-Token': connection.token }, body: JSON.stringify(payload) } : { cache: 'no-store' });
@@ -39,12 +61,12 @@ function refreshBook(renderReview = true) {
   const book = reviewed();
   if (!book) return;
   const count = book.blocks.reduce((n, b) => n + tokenize(b.t).length, 0);
+  bookWordCount = count;
   $('#word-count').textContent = `${count.toLocaleString()} words`;
   const seconds = count / (155 * Number($('#speed').value)) * 60;
   $('#duration-estimate').textContent = seconds < 60 ? `About ${Math.round(seconds)} seconds of audio` : `About ${Math.round(seconds / 60)} minutes of audio`;
   $('#excerpt').textContent = book.blocks.filter(b => b.k !== 'h').slice(0, 2).map(b => b.t).join(' ').slice(0, 650) || book.blocks[0]?.t || 'Choose at least one passage or chapter.';
-  $('#generate').disabled = !connection?.ready || !count || busy;
-  $('#preview-voice').disabled = !connection?.ready || !count || busy;
+  updateActions();
   if (renderReview) renderPassages();
 }
 
@@ -89,8 +111,11 @@ async function openBook(file) {
 }
 
 async function requestGeneration(kind) {
+  if (busy || submitting || !online) return;
   const book = reviewed();
   if (!book?.blocks.length) return;
+  submitting = true; updateActions();
+  try {
   let selected = book;
   if (kind === 'preview') {
     const body = book.blocks.find(b => b.k !== 'h') || book.blocks[0];
@@ -105,16 +130,20 @@ async function requestGeneration(kind) {
   const result = await api('/api/jobs', { kind, job, readingBook: kind === 'book' ? { format: 'stillpoint-reading-book', version: 1, book: metadata, content } : null,
     voice: $('#voice').value, speed: Number($('#speed').value) });
   if (kind === 'preview') activePreview = result.id;
-  busy = true; refreshBook(); await poll();
+  busy = true; runningJob = result;
+  } finally { submitting = false; updateActions(); }
+  refreshBook(); await poll();
 }
 
-const phaseLabels = { starting: 'Starting the local engine', loading: 'Loading the local voice engine · first use may take a few minutes', synthesis: 'Narrating passages', alignment: 'Aligning words', assembly: 'Joining the narration', encoding: 'Preparing the audiobook', finishing: 'Finishing the local voice session', complete: 'Ready to listen', paused: 'Paused · completed passages are saved', error: 'Generation needs attention' };
+const phaseLabels = { starting: 'Starting the local engine', loading: 'Loading the local voice engine', downloading: 'Downloading this voice for its first use', synthesis: 'Narrating passages', alignment: 'Aligning words', assembly: 'Joining the narration', encoding: 'Preparing the audiobook', finishing: 'Finishing the local voice session', complete: 'Ready to listen', paused: 'Paused · completed passages are saved', cancelled: 'Voice preview cancelled', error: 'Generation needs attention' };
 async function poll() {
   try {
     const state = await api('/api/status');
     const wasBusy = busy;
     connection = state;
-    busy = state.jobs.some(j => j.status === 'running');
+    online = true;
+    runningJob = state.jobs.find(j => j.status === 'running') || null;
+    busy = !!runningJob;
     $('#engine-state').textContent = state.ready ? 'Local engine ready' : 'Voice engine needs setup';
     $('#engine-state').classList.toggle('ready', state.ready);
     if (!state.ready) notify('Open Studio with its launcher to use the installed voice engine.');
@@ -132,7 +161,9 @@ async function poll() {
       activePreview = null;
     }
     if (parsed && wasBusy !== busy) refreshBook(false);
+    updateActions();
   } catch (error) {
+    online = false; updateActions();
     $('#engine-state').textContent = 'Local engine offline';
     notify('Start Audiobook Studio on your computer to generate narration. Your reader and downloaded audiobooks work independently.');
   }
@@ -150,7 +181,19 @@ $('#review-search').oninput = () => { passagePage = 0; renderPassages(); };
 $('#passages').onchange = e => { const sid = e.target.dataset.passage; if (!sid) return; if (e.target.value === 'auto') delete options.overrides[sid]; else options.overrides[sid] = e.target.value; renderChapters(); refreshBook(); };
 $('#passages-prev').onclick = () => { passagePage--; renderPassages(); };
 $('#passages-next').onclick = () => { passagePage++; renderPassages(); };
-$('#voice').onchange = () => { $('#voice-description').textContent = connection.voices.find(v => v.id === $('#voice').value)?.description || ''; };
+async function cancelPreview() {
+  if (runningJob?.kind !== 'preview') return;
+  await api(`/api/jobs/${runningJob.id}/cancel`, {});
+  activePreview = null;
+  await poll();
+}
+$('#cancel-preview').onclick = () => cancelPreview().catch(error => notify(error.message));
+$('#voice').onchange = async () => {
+  $('#voice-description').textContent = connection?.voices.find(v => v.id === $('#voice').value)?.description || '';
+  $('#voice-player').pause(); $('#voice-player').hidden = true;
+  try { await cancelPreview(); updateActions(); }
+  catch (error) { notify(error.message); }
+};
 $('#speed').oninput = () => { $('#speed-label').textContent = Number($('#speed').value).toFixed(2).replace(/0$/, '') + '×'; refreshBook(); };
 $('#generate').onclick = () => requestGeneration('book').catch(error => notify(error.message));
 $('#preview-voice').onclick = () => requestGeneration('preview').catch(error => notify(error.message));
