@@ -1,4 +1,5 @@
 import * as db from './db.js';
+import { refreshInstalledApp } from './updates.js';
 import { createNarrationJob, readNarrationPackage, validateManifest, NarrationPlayer } from './narration.js';
 import {
   buildIndex, buildSegments, chunkAt, estimateMs, formatDuration, lowerBound, rampFactor, splitAtPivot, tokenize, wordDelay,
@@ -73,7 +74,7 @@ const DEFAULTS = {
   smartPacing: true, commaPause: 1.4, sentencePause: 1.9, paragraphPause: 2.2, longWordPause: 1, chapterPause: 1500,
   sound: 'off', volume: 0.5, soundMode: 'reading', hiddenSounds: [], backupTracks: true, backupNarration: true,
   dailyGoal: 10, weekGoalDays: 1, weekStart: 0,
-  tapToPlay: true, holdMode: false, swipeSize: 36, openLast: true, keepAwake: true,
+  swipeSize: 36, openLast: true, keepAwake: true,
 };
 let S = { ...DEFAULTS };
 
@@ -132,8 +133,6 @@ const SETTINGS = [
   ]],
   ['Reading goal', GOAL_SETTINGS],
   ['Controls', [
-    { k: 'tapToPlay', label: 'Tap the text to play', help: 'When off, use the play button to start.', type: 'toggle' },
-    { k: 'holdMode', label: 'Hold to read', help: 'Words play while your finger is down and stop when you lift it.', type: 'toggle' },
     { k: 'keepAwake', label: 'Keep the screen on while reading', type: 'toggle' },
     { k: 'openLast', label: 'Open your last book on launch', type: 'toggle' },
   ]],
@@ -1428,10 +1427,7 @@ function bindReader() {
     }
     if (isControl(e.target) || (e.pointerType === 'mouse' && e.button !== 0)) return;
     g = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), mode: null, wpmSteps: 0, startPos: R.pos, wasPlaying: R.state === 'playing' };
-    if (S.holdMode && R.state === 'paused') {
-      g.holdTimer = setTimeout(() => { if (g) { g.mode = 'hold'; play({ instant: true, fromSeek: true }); } }, 130);
-    }
-    if (R.state === 'paused' && !S.holdMode) {
+    if (R.state === 'paused') {
       const word = e.target.closest('.w');
       if (word) {
         g.pressTimer = setTimeout(() => {
@@ -1458,7 +1454,6 @@ function bindReader() {
     if (!g.mode || g.mode === 'pending') {
       if (Math.abs(dx) > 10 || Math.abs(dy) > 10) clearPress();
       if (Math.abs(dx) > 14 && Math.abs(dx) > Math.abs(dy) * 1.3) {
-        clearTimeout(g.holdTimer);
         g.mode = 'wpm';
         try { reader.setPointerCapture(g.id); } catch {}
       } else if (dy > 14 && dy > Math.abs(dx) * 1.3 && R.state !== 'paused') {
@@ -1487,19 +1482,16 @@ function bindReader() {
     if (!g || e.pointerId !== g.id) return;
     const current = g;
     g = null;
-    clearTimeout(current.holdTimer);
     clearTimeout(current.pressTimer);
     current.pressed?.classList.remove('pressed');
     if (e.type === 'pointercancel') {
       if (current.mode === 'menu') setTimeout(() => { blockScrim = false; }, 400);
-      if (current.mode === 'hold') pause();
       if (current.mode === 'rewind') resumeAfterRewind();
       return;
     }
     if (current.mode === 'menu') setTimeout(() => { blockScrim = false; }, 400);
     const elapsed = performance.now() - current.t;
     const moved = Math.hypot(e.clientX - current.x, e.clientY - current.y);
-    if (current.mode === 'hold') { pause(); return; }
     if (current.mode === 'rewind') {
       const dy = e.clientY - current.y;
       if (elapsed < 260 && dy > 24) {
@@ -1511,10 +1503,8 @@ function bindReader() {
       return;
     }
     if (current.mode || moved > 12) return;
-    if (S.holdMode) return;
-    if (R.state === 'paused') {
-      if (S.tapToPlay) play();
-    } else pause();
+    // Text taps exit playback, but only the explicit Play control starts it.
+    if (R.state !== 'paused') pause();
   };
   reader.addEventListener('pointerup', finish);
   reader.addEventListener('pointercancel', finish);
@@ -1800,11 +1790,12 @@ function showSettings(startPage = null) {
     Pacing: () => (S.smartPacing ? 'Natural pauses on' : 'Natural pauses off'),
     'Ambient sound': () => soundLabel(S.sound),
     'Reading goal': () => `${S.dailyGoal} min a day`,
-    Controls: () => (S.holdMode ? 'Hold to read' : 'Tap to play, swipe for speed'),
+    Controls: () => 'Press Play to start; tap to pause',
     'Library and data': () => 'Backup, restore, and storage',
   };
   const PREVIEW = { Colors: 'word', 'RSVP word': 'word', 'Scrolling text': 'text' };
   const dataPage = () => `
+    <button class="menu-btn" data-a="app-update">Check for app updates<small>Load the latest reader and keep your place</small></button>
     <button class="menu-btn" data-a="backup">Save a backup<small>Includes your books, progress, bookmarks, stats, and settings</small></button>
     <label class="menu-btn" for="restore" style="cursor:pointer">Restore from a backup<small>Adds its books and replaces your settings</small></label>
     <input id="restore" type="file" accept=".zip,application/zip" style="position:absolute;opacity:0;width:1px;height:1px">
@@ -1974,6 +1965,14 @@ function showSettings(startPage = null) {
       return;
     }
     if (action === 'backup') exportBackup().catch(error => toast(error.message || 'The backup could not be saved.', 7000));
+    if (action === 'app-update') {
+      const button = e.target.closest('[data-a="app-update"]');
+      button.disabled = true;
+      toast('Checking for an update…', 16000);
+      refreshInstalledApp(async () => {
+        if (R) { pause({ animate: false }); await saveProgress(true); }
+      }).catch(error => { button.disabled = false; toast(error.message || 'The update could not be checked.', 7000); });
+    }
     if (action === 'reset') {
       confirmSheet('Reset settings?', 'Your books, progress, and stats will stay as they are.', 'Reset settings', () => {
         S = { ...DEFAULTS, settingsVersion: 2 };
@@ -2397,7 +2396,7 @@ async function boot() {
   applySettings();
   navigator.storage?.persist?.().catch(() => {});
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
   }
   const last = await db.get('kv', 'lastBook').catch(() => null);
   if (S.openLast && last && await db.get('books', last)) await openBook(last);
@@ -2405,7 +2404,7 @@ async function boot() {
   booted = true;
 }
 // The edge strips sit above the reader, so a tap on them still pauses reading.
-$$('.edge').forEach(el => el.addEventListener('click', () => { if (R && R.state !== 'paused' && !S.holdMode) pause(); }));
+$$('.edge').forEach(el => el.addEventListener('click', () => { if (R && R.state !== 'paused') pause(); }));
 // iOS only shows :active styles once a touch listener exists.
 document.addEventListener('touchstart', () => {}, { passive: true });
 boot();

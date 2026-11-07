@@ -129,6 +129,11 @@ async function packageFor(job) {
       const blob = __audioBlobs.get(player.audio.src);
       return blob.type === (player.manifest.clips[0].file.endsWith('.m4a') ? 'audio/mp4' : 'audio/wav');
     }));
+    await page.evaluate(() => { __stillpoint.S.tapToPlay = true; __stillpoint.S.holdMode = true; });
+    await page.locator('#flow-inner .w.cur').tap();
+    await page.waitForTimeout(200);
+    check('tapping paused text never starts playback, including with old control settings', await page.evaluate(() =>
+      __stillpoint.R.state === 'paused' && __stillpoint.R.narration.audio.paused));
     await page.click('#play');
     await page.waitForFunction(() => __stillpoint.R.pos >= 2 && __stillpoint.R.state === 'playing');
     check('audio clock advances and highlights scrolling text', await page.evaluate(() =>
@@ -182,6 +187,9 @@ async function packageFor(job) {
     await page.selectOption('#narration-rate', '1.5');
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'audiobook-controls.png') });
     await page.click('[data-close]');
+    await page.locator('#flow-inner .w.cur').tap();
+    await page.waitForTimeout(200);
+    check('audio RSVP waits for the Play button after a text tap', await page.evaluate(() => __stillpoint.R.state === 'paused' && __stillpoint.R.narration.audio.paused));
     await page.click('#play');
     await page.waitForFunction(() => __stillpoint.R.state === 'playing');
     check('RSVP follows the current audio word at the selected playback rate', await page.evaluate(() =>
@@ -205,6 +213,9 @@ async function packageFor(job) {
     await page.click('#r-audio');
     await page.selectOption('#narration-mode', 'off');
     await page.click('[data-close]');
+    await page.locator('#flow-inner .w.cur').tap();
+    await page.waitForTimeout(200);
+    check('independent RSVP waits for the Play button after a text tap', await page.evaluate(() => __stillpoint.R.state === 'paused'));
     await page.click('#play');
     await page.waitForFunction(() => __stillpoint.R.state === 'starting' || __stillpoint.R.state === 'playing');
     check('independent RSVP leaves narration paused', await page.evaluate(() => __stillpoint.R.narration.audio.paused));

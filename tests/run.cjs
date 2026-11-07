@@ -95,7 +95,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const start = await sp(() => __stillpoint.R.pos);
   await page.tap('#flow-inner p');
   await sleep(150);
-  ok('tap starts: reader enters focus mode', await sp(() => document.querySelector('#reader').classList.contains('starting')));
+  ok('tapping paused text does not start RSVP', await sp(() => __stillpoint.R.state === 'paused'));
+  await page.tap('#play');
+  ok('Play starts the RSVP countdown', await sp(() => document.querySelector('#reader').classList.contains('starting')));
   await sleep(600);
   await shot('05-countdown');
   ok('countdown shows', (await page.textContent('#count')).trim() !== '');
@@ -288,7 +290,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   ok('hex colors apply', await sp(() => __stillpoint.S.theme === 'custom' && __stillpoint.S.customHi === '#00ff88'));
   await page.tap('[data-theme-pick=tide]'); await sleep(450);
   await setBack();
-  for (const [name, id] of [['Scrolling text', '#s-textFont'], ['Speed', '#s-wpm'], ['Pacing', '#s-commaPause'], ['Ambient sound', '.track-list'], ['Reading goal', '#s-dailyGoal'], ['Controls', '#s-holdMode'], ['Library and data', '[data-a=backup]']]) {
+  for (const [name, id] of [['Scrolling text', '#s-textFont'], ['Speed', '#s-wpm'], ['Pacing', '#s-commaPause'], ['Ambient sound', '.track-list'], ['Reading goal', '#s-dailyGoal'], ['Controls', '#s-keepAwake'], ['Library and data', '[data-a=backup]']]) {
     await setPage(name);
     ok(`${name} page opens`, !!(await page.$(id)));
     await setBack();
@@ -397,16 +399,20 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const after = (await page.$$('.book-row')).length;
   ok('backup restores the whole library', after === before, `${before} books before, ${after} after`);
 
-  // Hold to read and multi-word
-  await sp(() => { __stillpoint.S.holdMode = true; __stillpoint.S.wordsPerFlash = 2; });
+  // Obsolete saved hold settings cannot start playback; Play supports multi-word RSVP.
+  await sp(() => { __stillpoint.S.holdMode = true; __stillpoint.S.wordsPerFlash = 2; __stillpoint.S.countdown = 0; });
   await page.click('.book-open >> nth=0');
   await page.waitForSelector('#reader');
   await sleep(450);
   await touch('touchStart', 200, 400); await sleep(700);
-  ok('hold to read plays without a countdown', await sp(() => __stillpoint.R.state === 'playing'));
-  ok('multiple words per flash work', /\S\s\S|—\S/.test(await sp(() => __stillpoint.R.lastText)), await sp(() => __stillpoint.R.lastText));
+  ok('holding text does not start RSVP', await sp(() => __stillpoint.R.state === 'paused'));
   await touch('touchEnd'); await sleep(300);
-  ok('lifting pauses hold to read', await sp(() => __stillpoint.R.state === 'paused'));
+  if (await page.$('[data-close]')) await page.click('[data-close]');
+  await page.tap('#play'); await sleep(300);
+  ok('Play starts multi-word RSVP', await sp(() => __stillpoint.R.state === 'playing'));
+  ok('multiple words per flash work', /\S\s\S|—\S/.test(await sp(() => __stillpoint.R.lastText)), await sp(() => __stillpoint.R.lastText));
+  await page.tap('#stage'); await sleep(300);
+  ok('tapping active RSVP pauses it', await sp(() => __stillpoint.R.state === 'paused'));
   await sp(() => { __stillpoint.S.holdMode = false; __stillpoint.S.wordsPerFlash = 1; });
 
   // Very long word
