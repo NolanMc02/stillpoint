@@ -1,6 +1,7 @@
 import * as db from './db.js';
 import { refreshInstalledApp } from './updates.js';
 import { BookReader } from './book-reader.js';
+import { openAudiobookZip } from './audiobook-zip.js';
 import { createNarrationJob, readNarrationPackage, validateManifest, NarrationPlayer } from './narration.js';
 import {
   buildIndex, buildSegments, chunkAt, estimateMs, formatDuration, lowerBound, rampFactor, splitAtPivot, tokenize, wordDelay,
@@ -293,6 +294,7 @@ function navigate(direction, render) {
   transition.ready.catch(() => {});
   transition.updateCallbackDone.catch(error => console.error(error));
   transition.finished.catch(() => {}).finally(() => { delete root.dataset.nav; });
+  return transition.updateCallbackDone;
 }
 
 /* ---------- Library ---------- */
@@ -462,11 +464,15 @@ async function storeBook(parsed) {
   return id;
 }
 
-async function importGeneratedPackage(file) {
-  const zip = await window.JSZip.loadAsync(await file.arrayBuffer());
-  const entry = zip.file('reading-book.json');
-  if (!entry) return null;
-  const payload = JSON.parse(await entry.async('string'));
+async function importGeneratedPackage(file, onProgress = () => {}) {
+  onProgress('Reading the ZIP directory…');
+  const zip = await openAudiobookZip(file);
+  if (!zip.has('reading-book.json')) {
+    if (zip.has('audiobook.json')) throw new ImportError('This ZIP contains audio and timings, but no book text. Open the matching book’s speaker menu → Import audiobook, or download the combined book ZIP from Studio.');
+    return null;
+  }
+  onProgress('Reading the included book text…');
+  const payload = await zip.json('reading-book.json');
   if (payload.format !== 'stillpoint-reading-book' || payload.version !== 1 || !Array.isArray(payload.content?.blocks)) throw new ImportError('This audiobook package has no supported reading text.');
   const blocks = payload.content.blocks;
   if (!blocks.length || blocks.some(b => typeof b.t !== 'string' || typeof b.sid !== 'string')) throw new ImportError('The reading text in this audiobook is incomplete.');
@@ -477,9 +483,14 @@ async function importGeneratedPackage(file) {
     finishedAt: null, wpm: null, chapters, bookmarks: [], hasCleanup: !!payload.content.cleanup,
     readingView: 'book', bookLayout: 'pages', audioMode: 'page', audioRate: 1 };
   const content = { id, blocks, ...(payload.content.cleanup ? { cleanup: payload.content.cleanup } : {}) };
+  await db.put('kv', { name: file.name, bookId: id, startedAt: Date.now() }, 'pendingAudiobookImport');
+  onProgress('Checking that the book and narration match…');
   const job = await createNarrationJob(book, content);
-  const { manifest, audio } = await readNarrationPackage(file, job);
-  await db.saveGeneratedBook(book, content, manifest, audio);
+  const { manifest, audio } = await readNarrationPackage(file, job, { archive: zip, onProgress });
+  onProgress('Saving audio to this device — 0%. Keep Stillpoint open…');
+  await db.saveGeneratedBook(book, content, manifest, audio, (written, total) => {
+    onProgress(`Saving audio to this device — ${Math.round(written / Math.max(1, total) * 100)}%. Keep Stillpoint open…`);
+  });
   return id;
 }
 
@@ -489,11 +500,13 @@ async function importQueue(files) {
   let lastId = null;
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
+    let generatedSaved = false;
     const sheet = openSheet('Adding books', `<div class="sheet-body"><p class="spinner-line" id="imp-status">Opening ${esc(file.name)}${files.length > 1 ? ` (${i + 1} of ${files.length})` : ''}</p></div>`);
     try {
       if (/\.zip$/i.test(file.name)) {
-        const generated = await importGeneratedPackage(file);
-        if (generated) { lastId = generated; added++; closeSheet(); continue; }
+        await db.put('kv', { name: file.name, startedAt: Date.now() }, 'pendingAudiobookImport');
+        const generated = await importGeneratedPackage(file, status => { const el = $('#imp-status', sheet); if (el) el.textContent = status; });
+        if (generated) { generatedSaved = true; lastId = generated; added++; closeSheet(); continue; }
       }
       const result = await importFile(file, status => { const el = $('#imp-status', sheet); if (el) el.textContent = status; });
       if (result.review) {
@@ -507,7 +520,9 @@ async function importQueue(files) {
       if (!(error instanceof ImportError)) console.error(error);
       const quota = error?.name === 'QuotaExceededError';
       failures.push([file.name, quota ? 'There is not enough storage left on this device.'
-        : error instanceof ImportError ? error.message : 'This file could not be read.']);
+        : error instanceof ImportError || /\.zip$/i.test(file.name) ? error?.message || 'Audiobook import was interrupted. Try again with the original ZIP.' : 'This file could not be read.']);
+    } finally {
+      if (/\.zip$/i.test(file.name) && !generatedSaved) await db.del('kv', 'pendingAudiobookImport').catch(() => {});
     }
   }
   closeSheet();
@@ -517,11 +532,17 @@ async function importQueue(files) {
       ${added ? `<p class="muted">${added} added successfully.</p>` : ''}</div>`);
     showLibraryKeepSheet();
   } else if (files.length === 1 && lastId) {
-    openBook(lastId);
+    try { await openBook(lastId); }
+    catch (error) {
+      R?.narration?.dispose(); R?.bookView?.destroy(); R = null;
+      await showLibrary();
+      openSheet('Book saved', `<div class="sheet-body"><p>The book was added, but the reader could not open it: ${esc(error.message || 'unknown error')}. You can reopen it from the library.</p></div>`);
+    }
   } else {
     if (added) toast(`${added} ${added === 1 ? 'book' : 'books'} added`);
     showLibrary();
   }
+  if (files.some(file => /\.zip$/i.test(file.name))) await db.del('kv', 'pendingAudiobookImport').catch(() => {});
 }
 function showLibraryKeepSheet() { if (!R) showLibrary(); }
 
@@ -734,7 +755,7 @@ async function attachNarration() {
   try {
     validateManifest(record.manifest, await createNarrationJob(owner.book, { blocks: owner.blocks }));
     owner.narration = new NarrationPlayer(record.manifest,
-      async file => (await db.get('narrationdata', `${owner.book.id}:${file}`))?.data,
+      file => db.readNarrationAudio(owner.book.id, file),
       {
         onWord: pos => {
           if (R !== owner) return;
@@ -929,7 +950,7 @@ async function openBook(id) {
   document.title = book.title;
   history.replaceState(null, '', '#reading');
   closeSheet();
-  navigate('forward', renderReader);
+  await navigate('forward', renderReader);
 }
 let segStartsCache = [];
 
@@ -2146,9 +2167,9 @@ async function exportBackup() {
   for (const record of narrations) {
     zip.file(`narrations/${record.id}.json`, JSON.stringify(record.manifest));
     for (const clip of record.manifest.clips) {
-      const audio = await db.get('narrationdata', `${record.id}:${clip.file}`);
+      const audio = await db.readNarrationAudio(record.id, clip.file);
       if (!audio) throw new Error('An audiobook clip is missing. Import it again before backing up.');
-      zip.file(`narrations/${record.id}/${clip.file}`, audio.data);
+      zip.file(`narrations/${record.id}/${clip.file}`, audio);
     }
   }
   zip.file('stillpoint.json', JSON.stringify({ app: 'stillpoint', version: 1, createdAt: Date.now(), settings: S, books, sessions, tracks: kept, narrationIds: narrations.map(n => n.id) }));
@@ -2544,9 +2565,16 @@ async function boot() {
     navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
   }
   const last = await db.get('kv', 'lastBook').catch(() => null);
-  if (S.openLast && last && await db.get('books', last)) await openBook(last);
+  const interrupted = await db.get('kv', 'pendingAudiobookImport').catch(() => null);
+  if (!interrupted && S.openLast && last && await db.get('books', last)) await openBook(last);
   else await showLibrary();
   booted = true;
+  if (interrupted) {
+    await db.del('kv', 'pendingAudiobookImport').catch(() => {});
+    const stored = interrupted.bookId && await db.get('books', interrupted.bookId);
+    if (interrupted.bookId && !stored) await db.removeNarration(interrupted.bookId).catch(() => {});
+    openSheet('Audiobook import interrupted', `<div class="sheet-body"><p>${esc(interrupted.name || 'The last audiobook')} was being imported when the app stopped.</p><p>${stored ? 'Its book was saved. Check the library before importing it again.' : 'The import did not finish. Check for an app update, keep Stillpoint open, then choose the original ZIP again.'}</p></div>`);
+  }
 }
 // The edge strips sit above the reader, so a tap on them still pauses reading.
 $$('.edge').forEach(el => el.addEventListener('click', () => { if (R && R.state !== 'paused') pause(); }));

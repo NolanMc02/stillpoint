@@ -1,5 +1,6 @@
 // Versioned interchange shared with tools/audiobook. Timings refer to the saved audio timeline.
 import { tokenize } from './engine.js';
+import { openAudiobookZip } from './audiobook-zip.js';
 
 export const TOKENIZER = 'stillpoint-v1';
 export const canonicalText = blocks => JSON.stringify(blocks.map(b => [b.sid, b.tokens.map(t => [t.w, t.g])]));
@@ -53,16 +54,15 @@ export function validateManifest(manifest, job) {
   return manifest;
 }
 
-export async function readNarrationPackage(file, job) {
-  const zip = await window.JSZip.loadAsync(await file.arrayBuffer());
-  const entry = zip.file('audiobook.json');
-  if (!entry) fail('Choose an audiobook package generated from a Stillpoint narration job.');
-  const manifest = validateManifest(JSON.parse(await entry.async('string')), job);
+export async function readNarrationPackage(file, job, { archive, onProgress = () => {} } = {}) {
+  const zip = archive || await openAudiobookZip(file);
+  if (!zip.has('audiobook.json')) fail('Choose an audiobook ZIP downloaded from Stillpoint Audiobook Studio.');
+  onProgress('Checking the audiobook’s word timings…');
+  const manifest = validateManifest(await zip.json('audiobook.json'), job);
   const audio = [];
   for (const clip of manifest.clips) {
-    const entry = zip.file(clip.file);
-    if (!entry) fail(`This audiobook is missing ${clip.file}.`);
-    const data = await entry.async('blob');
+    onProgress(`Preparing audio ${audio.length + 1} of ${manifest.clips.length}…`);
+    const data = await zip.audio(clip.file);
     if (!data.size) fail('This audiobook contains an empty audio clip.');
     audio.push({ file: clip.file, data: playableAudioBlob(data, clip.file) });
   }

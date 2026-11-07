@@ -8,6 +8,8 @@ Use the **book icon** in the reader to switch between Book and RSVP views. In Bo
 
 Open the site in Safari, tap Share, then Add to Home Screen.
 
+Keep Stillpoint open while importing an audiobook. The import shows its stage and audio-saving percentage. Studio's stored M4A ZIP is read in ranges and saved as small audio parts, avoiding whole-archive memory copies. If the app stops during import, reopening shows recovery guidance. Existing audio imports remain compatible. Update an installed copy through **Settings → Library and data → Check for app updates**.
+
 Ambient sound can use your own audio files (MP3, M4A, WAV, or AAC). Add or remove tracks under Settings, Ambient sound. Each file loops over and over and is kept on the device.
 
 No build step is needed. To run the tests, serve this folder on port 8123, then run `python3 tests/make_samples.py` and `node tests/run.cjs` with Playwright installed.
@@ -22,7 +24,11 @@ Additional browser regression checks (install `playwright` and `jszip`):
 
 ```sh
 node tests/cleanup.cjs
+node tests/audiobook-zip.cjs
+node tests/large-audiobook.cjs
 node tests/examples.cjs /path/to/folder-containing-example-epubs-and-example-pdfs
 ```
 
 The cleanup suite creates its own small EPUB in memory and checks import/review, restoration, chapter announcements, PDF classification, cancellation, persistence, reading position, and bookmarks on a phone viewport. The optional examples suite reads the local example books without copying them into this repository. Set `CHROME_PATH` to an installed Chrome executable when Playwright's browser is unavailable. The original sample generator also requires Pandoc and ReportLab.
+
+The large-audiobook suite requires Node 22.15+ for `zlib.crc32` and creates a sparse 416 MiB ZIP in the system temporary folder. It exercises import, reopening, native reader playback, failed-write rollback, interrupted-import cleanup, and damaged ZIP errors. WebKit uses disk-backed storage. The ZIP suite checks stored/deflated entries, streaming descriptors, ZIP64, and corrupt archives. Set `BOOK_BROWSER=webkit` to run either suite with an installed Playwright WebKit engine. These desktop tests do not replace a physical iPhone check.

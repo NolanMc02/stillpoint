@@ -1,11 +1,12 @@
 // Keeps the app available offline. Books stay in on-device storage and never pass through here.
-const CACHE = 'stillpoint-v12';
+const CACHE = 'stillpoint-v13';
 const APP_FILES = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/app.js', 'js/engine.js', 'js/importers.js', 'js/pdfclean.js', 'js/bookclean.js', 'js/db.js', 'js/sounds.js', 'js/streaks.js',
   'js/narration.js',
   'js/updates.js',
   'js/book-reader.js',
+  'js/audiobook-zip.js',
   'vendor/jszip.min.js', 'vendor/pdf.min.mjs', 'vendor/pdf.worker.min.mjs',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];

@@ -33,7 +33,7 @@ function run(store, mode, fn) {
     const tx = db.transaction(store, mode);
     const req = fn(tx.objectStore(store));
     tx.oncomplete = () => resolve(req?.result);
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = event => reject(event.target.error || tx.error);
     tx.onabort = () => reject(tx.error);
   });
 }
@@ -73,34 +73,75 @@ function deleteNarrationData(tx, bookId) {
 }
 
 export function saveNarration(bookId, manifest, audio) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(['narrations', 'narrationdata'], 'readwrite');
-    // Delete existing clips before adding replacements; all requests share one transaction.
-    const store = tx.objectStore('narrationdata');
-    const request = store.index('bookId').openCursor(IDBKeyRange.only(bookId));
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (cursor) { cursor.delete(); cursor.continue(); return; }
-      for (const clip of audio) store.put({ id: `${bookId}:${clip.file}`, bookId, data: clip.data });
-      tx.objectStore('narrations').put({ id: bookId, manifest });
-    };
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
+  return saveNarrationBundle(bookId, manifest, audio);
 }
 
-export function saveGeneratedBook(book, content, manifest, audio) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(['books', 'contents', 'narrations', 'narrationdata'], 'readwrite');
-    tx.objectStore('books').put(book);
-    tx.objectStore('contents').put(content);
-    tx.objectStore('narrations').put({ id: book.id, manifest });
-    for (const clip of audio) tx.objectStore('narrationdata').put({ id: `${book.id}:${clip.file}`, bookId: book.id, data: clip.data });
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
+// WebKit cannot reliably persist a File-backed Blob slice. Materialize only one
+// small part at a time, stage it on disk, then publish all pointers atomically.
+// Existing narration stays usable until that final transaction commits.
+const AUDIO_PART_SIZE = 8 * 1024 * 1024;
+async function saveNarrationBundle(bookId, manifest, audio, book, content, onProgress = () => {}) {
+  const staged = [], records = [];
+  const total = audio.reduce((sum, clip) => sum + clip.data.size, 0);
+  let written = 0;
+  try {
+    for (const clip of audio) {
+      const id = `${bookId}:${clip.file}`, parts = Math.ceil(clip.data.size / AUDIO_PART_SIZE);
+      const prefix = `${id}:stage:${crypto.randomUUID()}`;
+      for (let part = 0; part < parts; part++) {
+        const start = part * AUDIO_PART_SIZE;
+        const buffer = await clip.data.slice(start, Math.min(clip.data.size, start + AUDIO_PART_SIZE)).arrayBuffer();
+        const data = new Blob([buffer], { type: clip.data.type });
+        if (parts === 1) records.push({ id, bookId, data });
+        else {
+          const key = `${prefix}:part:${part}`;
+          staged.push(key);
+          await put('narrationdata', { id: key, bookId, data });
+        }
+        written += data.size; onProgress(written, total);
+      }
+      if (parts !== 1) records.push({ id, bookId, parts, partPrefix: prefix, size: clip.data.size, type: clip.data.type });
+    }
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(book ? ['books', 'contents', 'narrations', 'narrationdata'] : ['narrations', 'narrationdata'], 'readwrite');
+      const store = tx.objectStore('narrationdata'), keep = new Set(staged);
+      const request = store.index('bookId').openCursor(IDBKeyRange.only(bookId));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) { if (!keep.has(cursor.primaryKey)) cursor.delete(); cursor.continue(); return; }
+        for (const record of records) store.put(record);
+        tx.objectStore('narrations').put({ id: bookId, manifest });
+        if (book) { tx.objectStore('books').put(book); tx.objectStore('contents').put(content); }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = event => reject(event.target.error || tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } catch (error) {
+    // Failed writes never publish a partial book or replace working narration.
+    await Promise.all(staged.map(key => del('narrationdata', key))).catch(() => {});
+    throw error;
+  }
+}
+
+export async function readNarrationAudio(bookId, file) {
+  const id = `${bookId}:${file}`, record = await get('narrationdata', id);
+  if (!record) return null;
+  if (record.data) return record.data; // Existing imports remain readable.
+  if (!Number.isInteger(record.parts) || record.parts < 1) throw new Error('This audiobook’s saved audio index is damaged.');
+  const parts = [];
+  for (let i = 0; i < record.parts; i++) {
+    const part = await get('narrationdata', `${record.partPrefix || id}:part:${i}`);
+    if (!part?.data) throw new Error('This audiobook has a missing saved audio part. Import it again.');
+    parts.push(part.data);
+  }
+  const audio = new Blob(parts, { type: record.type });
+  if (audio.size !== record.size) throw new Error('This audiobook’s saved audio is incomplete. Import it again.');
+  return audio;
+}
+
+export function saveGeneratedBook(book, content, manifest, audio, onProgress) {
+  return saveNarrationBundle(book.id, manifest, audio, book, content, onProgress);
 }
 
 export function removeNarration(bookId) {
