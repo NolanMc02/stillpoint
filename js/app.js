@@ -1,4 +1,5 @@
 import * as db from './db.js';
+import { createNarrationJob, readNarrationPackage, validateManifest, NarrationPlayer } from './narration.js';
 import {
   buildIndex, buildSegments, chunkAt, estimateMs, formatDuration, lowerBound, rampFactor, splitAtPivot, tokenize, wordDelay,
 } from './engine.js';
@@ -70,7 +71,7 @@ const DEFAULTS = {
   textFont: 'iowan', textSize: 19, textLead: 1.6, textMargin: 22, textAlign: 'left',
   wpm: 300, wpmStep: 25, wpmMin: 50, wpmMax: 1500, perBookWpm: true, countdown: 3, ramp: 5, rewind: 10, resumeBack: 0,
   smartPacing: true, commaPause: 1.4, sentencePause: 1.9, paragraphPause: 2.2, longWordPause: 1, chapterPause: 1500,
-  sound: 'off', volume: 0.5, soundMode: 'reading', hiddenSounds: [], backupTracks: true,
+  sound: 'off', volume: 0.5, soundMode: 'reading', hiddenSounds: [], backupTracks: true, backupNarration: true,
   dailyGoal: 10, weekGoalDays: 1, weekStart: 0,
   tapToPlay: true, holdMode: false, swipeSize: 36, openLast: true, keepAwake: true,
 };
@@ -368,6 +369,7 @@ function showBookMenu(book) {
   const sheet = openSheet(book.title, `<div class="sheet-body">
     <button class="menu-btn" data-a="rename">Rename</button>
     ${book.hasCleanup ? '<button class="menu-btn" data-a="cleanup">Review reading text</button>' : ''}
+    <button class="menu-btn" data-a="narration">Audiobook</button>
     <button class="menu-btn" data-a="restart">Read again from the start</button>
     <button class="menu-btn danger" data-a="delete">Delete book</button></div>`);
   sheet.onclick = async e => {
@@ -387,6 +389,8 @@ function showBookMenu(book) {
     } else if (action === 'cleanup') {
       try { await editBookCleanup(book); }
       catch (error) { console.error(error); toast('Changes could not be saved. Try again.'); }
+    } else if (action === 'narration') {
+      showNarration(book).catch(error => toast(error.message));
     } else if (action === 'restart') {
       book.pos = 0;
       book.finishedAt = null;
@@ -628,12 +632,172 @@ function reviewPdf(extracted, fileName) {
   });
 }
 
+/* ---------- Audiobooks ---------- */
+function narrating() { return !!R?.narration && ['page', 'rsvp'].includes(R.book.audioMode); }
+
+async function attachNarration() {
+  const owner = R;
+  const record = await db.get('narrations', owner.book.id);
+  if (!record || R !== owner) return;
+  try {
+    validateManifest(record.manifest, await createNarrationJob(owner.book, { blocks: owner.blocks }));
+    owner.narration = new NarrationPlayer(record.manifest,
+      async file => (await db.get('narrationdata', `${owner.book.id}:${file}`))?.data,
+      {
+        onWord: pos => {
+          if (R !== owner) return;
+          owner.sessionWords += Math.max(0, pos - owner.pos);
+          owner.pos = pos;
+          if (!document.hidden) {
+            if (owner.book.audioMode === 'page') showFlowAt(pos, true);
+            else renderWord(owner.words[pos]);
+            if (!owner.scrubbing && !owner.jump) updateMeta();
+          }
+          saveProgress();
+        },
+        onEnd: () => { if (R === owner) finishBook(); },
+        onPause: () => { if (R === owner) pause({ animate: false }); },
+        onResume: () => {
+          if (R === owner && narrating() && owner.state === 'paused') {
+            owner.sessionStart ||= performance.now(); setMode('playing');
+          }
+        },
+        onError: error => { if (R === owner) { pause({ animate: false }); toast(error.message, 7000); } },
+      });
+    owner.narration.setRate(owner.book.audioRate || 1);
+    // Fetch the local Blob before the tap so play() stays inside the user's gesture.
+    await owner.narration.prepare(owner.pos);
+  } catch (error) { owner.narration?.dispose(); owner.narration = null; owner.narrationError = error.message; }
+}
+
+function applyNarrationMode() {
+  if (!R || !$('#reader')) return;
+  const active = narrating();
+  $('#reader').classList.toggle('audio-page', active && R.book.audioMode === 'page');
+  $('#r-audio').setAttribute('aria-pressed', active);
+  if (active) {
+    $('#wpm-v').textContent = `${(R.book.audioRate || 1).toFixed(1)}×`;
+    $('#wpm-box small').textContent = 'Audio';
+    $('#wpm-box').setAttribute('aria-label', 'Audiobook playback settings');
+  } else {
+    R.narration?.releaseMediaSession();
+    $('#wpm-box small').textContent = 'WPM';
+    $('#wpm-box').setAttribute('aria-label', 'Choose reading speed');
+  }
+}
+
+async function playNarration({ resume = true } = {}) {
+  const owner = R;
+  const run = ++owner.run;
+  clearTimeout(owner.timer);
+  if (owner.jump) clearJump();
+  hideJumpBar();
+  setMode('starting');
+  // Narration does not need a lit screen. Pure RSVP still uses the normal wake lock.
+  releaseWake();
+  owner.narration.claimMediaSession(owner.book, {
+    play: () => { if (R === owner && narrating() && owner.state === 'paused') playNarration(); },
+    pause: () => { if (R === owner) pause({ animate: false }); },
+    seek: pos => { if (R === owner && narrating()) seek(pos); },
+  });
+  try {
+    if (!await owner.narration.playAt(owner.pos, { resume }) || R !== owner || run !== owner.run) return;
+    owner.sessionStart ||= performance.now();
+    setMode('playing');
+  } catch (error) {
+    if (R === owner && run === owner.run) { pause({ animate: false }); toast(error.message || 'Audio playback could not start.', 7000); }
+  }
+}
+
+async function shareNarrationFile(blob, name) {
+  const file = new File([blob], name, { type: blob.type });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return; }
+    catch (error) { if (error.name === 'AbortError') return; }
+  }
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a'); a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+async function showNarration(book) {
+  if (R?.book.id === book.id) pause({ animate: false });
+  const content = await db.get('contents', book.id);
+  if (!content) throw new Error('This book could not be found.');
+  const job = await createNarrationJob(book, content);
+  const record = await db.get('narrations', book.id);
+  let valid = false, message = 'Export the reviewed reading text, generate its narration on your computer, then import the audiobook here.';
+  if (record) {
+    try {
+      validateManifest(record.manifest, job); valid = true;
+      message = record.manifest.clips.length === 1
+        ? 'Audiobook saved on this device. Start playback before locking your screen. Choose how to follow the narration below.'
+        : 'This older audiobook uses separate clips. Regenerate it as continuous audio for screen-off listening.';
+    }
+    catch (error) { message = error.message; }
+  }
+  const sheet = openSheet('Audiobook', `<div class="sheet-body stack">
+    <p class="muted" id="narration-status">${esc(message)}</p>
+    <button class="menu-btn" id="narration-export">Export narration job<small>Uses your current reading-text choices</small></button>
+    <label class="menu-btn" for="narration-import">Import audiobook<small>Choose the generated audiobook ZIP</small></label>
+    <input type="file" id="narration-import" accept=".zip,application/zip" hidden>
+    ${valid ? `<label for="narration-mode">Reading mode</label><select class="field-text" id="narration-mode">
+      <option value="off">Read without narration</option><option value="page">Listen and follow text</option><option value="rsvp">Listen and follow RSVP</option></select>
+      <label for="narration-rate">Playback speed</label><select class="field-text" id="narration-rate">${[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(n => `<option value="${n}">${n}×</option>`).join('')}</select>` : ''}
+    ${record ? '<button class="menu-btn danger" id="narration-remove">Remove audiobook</button>' : ''}
+    </div>`);
+  $('#narration-export', sheet).onclick = async () => {
+    try { await shareNarrationFile(new Blob([JSON.stringify(job)], { type: 'application/json' }), `${book.id}-narration.json`); }
+    catch (error) { toast(error.message); }
+  };
+  $('#narration-import', sheet).onchange = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    $('#narration-status', sheet).textContent = 'Importing audiobook…';
+    try {
+      const { manifest, audio } = await readNarrationPackage(file, job);
+      await db.saveNarration(book.id, manifest, audio);
+      book.audioMode = 'page'; book.audioRate ||= 1;
+      await db.put('books', book);
+      closeSheet();
+      if (R?.book.id === book.id) await openBook(book.id);
+      toast('Audiobook ready. Press play to listen.');
+    } catch (error) { $('#narration-status', sheet).textContent = error.name === 'QuotaExceededError' ? 'There is not enough storage for this audiobook.' : error.message; }
+  };
+  if (valid) {
+    $('#narration-mode', sheet).value = book.audioMode || 'off';
+    const rate = $('#narration-rate', sheet);
+    if (![...rate.options].some(o => Number(o.value) === (book.audioRate || 1))) rate.add(new Option(`${book.audioRate}×`, book.audioRate));
+    rate.value = book.audioRate || 1;
+    const update = async () => {
+      book.audioMode = $('#narration-mode', sheet).value;
+      book.audioRate = Number(rate.value);
+      await db.put('books', book);
+      if (R?.book.id === book.id) {
+        R.book.audioMode = book.audioMode; R.book.audioRate = book.audioRate;
+        R.narration?.setRate(book.audioRate);
+        applyNarrationMode(); updateWpm(); updateMeta();
+      }
+    };
+    $('#narration-mode', sheet).onchange = () => update().catch(error => toast(error.message));
+    rate.onchange = () => update().catch(error => toast(error.message));
+  }
+  if (record) $('#narration-remove', sheet).onclick = async () => {
+    try {
+      await db.removeNarration(book.id);
+      if (R?.book.id === book.id) { R.narration?.dispose(); R.narration = null; applyNarrationMode(); updateWpm(); updateMeta(); }
+      closeSheet(); toast('Audiobook removed');
+    } catch (error) { toast(error.message); }
+  };
+}
+
 /* ---------- Reader ---------- */
 let R = null;
 let wakeLock = null;
 const SEG_WINDOW = 7;
 
 async function openBook(id) {
+  R?.narration?.dispose();
   const [book, content] = await Promise.all([db.get('books', id), db.get('contents', id)]);
   if (!book || !content) { toast('This book could not be found.'); showLibrary(); return; }
   const index = buildIndex(content.blocks);
@@ -648,6 +812,7 @@ async function openBook(id) {
     loaded: [0, -1], sessionWords: 0, sessionStart: 0, lastSave: 0, lastText: '',
     extraChapterPause: 0,
   };
+  await attachNarration();
   segStartsCache = R.segs.map(s => s.start);
   book.lastReadAt = Date.now();
   db.put('books', book).catch(() => {});
@@ -687,6 +852,7 @@ function renderReader() {
     <header class="bar" id="top-bar">
       <button class="icon-btn" id="r-back" aria-label="Back to library">${icon('back')}</button>
       <button id="chapter-btn" aria-label="Open chapters"><b id="c-title"></b><small id="c-book"></small></button>
+      <button class="icon-btn" id="r-audio" aria-label="Audiobook">${icon('sound')}</button>
       <button class="icon-btn" id="r-mark" aria-label="Add a bookmark">${icon('mark')}</button>
       <button class="icon-btn" id="r-settings" aria-label="Settings">${icon('gear')}</button>
     </header>
@@ -718,6 +884,7 @@ function renderReader() {
     });
   }
   bindReader();
+  applyNarrationMode();
   updateWpm();
   updateMeta();
   renderWord(R.words[R.pos] || '');
@@ -883,7 +1050,7 @@ function updateMeta() {
   const scrub = $('#scrub');
   if (scrub && !R.scrubbing) scrub.value = pos;
   const pctEl = $('#m-pct');
-  const left = formatDuration(estimateMs(R.words.length - pos, R.wpm, S.smartPacing));
+  const left = formatDuration(narrating() ? R.narration.remainingMs(pos) : estimateMs(R.words.length - pos, R.wpm, S.smartPacing));
   if (pctEl) {
     pctEl.textContent = `${Math.round(ratio * 100)}%`;
     $('#m-left').textContent = `${left} left`;
@@ -907,6 +1074,7 @@ function currentChapter(pos) {
   return found < 0 ? null : R.book.chapters[found];
 }
 function updateWpm(showBadge) {
+  if (narrating()) { applyNarrationMode(); updateMeta(); return; }
   const v = $('#wpm-v');
   if (v) v.textContent = R.wpm;
   const popValue = $('#pop-v');
@@ -926,6 +1094,7 @@ function updateWpm(showBadge) {
 }
 const wpmPopOpen = () => !!$('#wpm-pop')?.classList.contains('open');
 function toggleWpmPop(open) {
+  if (narrating()) { if (open) showNarration(R.book).catch(error => toast(error.message)); return; }
   const pop = $('#wpm-pop');
   if (!pop) return;
   if (open) {
@@ -949,6 +1118,10 @@ function setWpm(value) {
   saveProgress();
 }
 function changeWpm(steps) {
+  if (narrating()) {
+    R.book.audioRate = clamp(Math.round(((R.book.audioRate || 1) + steps * 0.1) * 10) / 10, 0.5, 2);
+    R.narration.setRate(R.book.audioRate); applyNarrationMode(); saveProgress(true); return;
+  }
   const next = clamp(Math.round((R.wpm + steps * S.wpmStep) / S.wpmStep) * S.wpmStep, S.wpmMin, S.wpmMax);
   if (next !== R.wpm) {
     R.wpm = next;
@@ -1000,6 +1173,7 @@ function flyWord(fromRect, toRect, text, fontCSS, done) {
 }
 function play(options = {}) {
   if (!R || R.state !== 'paused') return;
+  if (narrating()) { playNarration(); return; }
   toggleWpmPop(false);
   if (R.pos >= R.words.length - 1) R.pos = 0;
   unlockAudio();
@@ -1107,6 +1281,7 @@ function commitSession() {
 function pause({ animate = true } = {}) {
   if (!R || R.state === 'paused') return;
   R.run++;
+  R.narration?.pause();
   clearTimeout(R.timer);
   commitSession();
   releaseWake();
@@ -1145,6 +1320,10 @@ function seek(pos, { undo = false } = {}) {
   if (R.jump) clearJump();
   hideJumpBar();
   R.pos = clamp(pos, 0, R.words.length - 1);
+  if (narrating()) {
+    if (R.state !== 'paused') playNarration({ resume: false });
+    else R.narration.playAt(R.pos, { paused: true, resume: false }).catch(error => toast(error.message));
+  }
   updateMeta();
   renderWord(R.words[R.pos]);
   if (R.state === 'paused') showFlowAt(R.pos, true);
@@ -1190,10 +1369,11 @@ function bindReader() {
   const reader = $('#reader');
   const flow = $('#flow');
   flow.addEventListener('scroll', onFlowScroll, { passive: true });
-  $('#r-back').onclick = () => { pause({ animate: false }); saveProgress(true); stopSound(); R = null; showLibrary(); };
+  $('#r-back').onclick = () => { pause({ animate: false }); saveProgress(true); stopSound(); R.narration?.dispose(); R = null; showLibrary(); };
   $('#chapter-btn').onclick = () => showToc('chapters');
   $('#r-toc').onclick = () => showToc('chapters');
   $('#r-mark').onclick = addBookmark;
+  $('#r-audio').onclick = () => showNarration(R.book).catch(error => toast(error.message));
   $('#r-settings').onclick = () => showSettings();
   $('#r-rew').onclick = () => rewindBy(S.rewind);
   $('#w-up').onclick = () => changeWpm(1);
@@ -1278,6 +1458,7 @@ function bindReader() {
         g.mode = 'rewind';
         R.run++;
         clearTimeout(R.timer);
+        if (narrating()) R.narration.pause();
         try { reader.setPointerCapture(g.id); } catch {}
       }
     }
@@ -1333,6 +1514,7 @@ function bindReader() {
 }
 function resumeAfterRewind() {
   saveProgress(true);
+  if (narrating()) { if (R.state !== 'paused') playNarration(); return; }
   if (R.state === 'playing') {
     const run = ++R.run;
     R.sinceplay = 0;
@@ -1374,7 +1556,8 @@ function showToc(tab) {
   const percent = w => `${Math.round((w / total) * 100)}%`;
   const sheet = openSheet(R.book.title, `<div class="tabs" role="tablist">
       <button role="tab" data-t="chapters">Chapters</button><button role="tab" data-t="bookmarks">Bookmarks</button><button role="tab" data-t="search">Search</button>
-    </div>${R.book.hasCleanup ? '<button class="menu-btn clean-open" id="reader-cleanup">Review reading text</button>' : ''}<div class="sheet-body" id="toc-body"></div>`, { tall: true });
+    </div><button class="menu-btn clean-open" id="reader-audiobook">Audiobook</button>${R.book.hasCleanup ? '<button class="menu-btn clean-open" id="reader-cleanup">Review reading text</button>' : ''}<div class="sheet-body" id="toc-body"></div>`, { tall: true });
+  $('#reader-audiobook', sheet).onclick = () => showNarration(R.book).catch(error => toast(error.message));
   if ($('#reader-cleanup', sheet)) $('#reader-cleanup', sheet).onclick = () => editBookCleanup(R.book).catch(error => { console.error(error); toast('Changes could not be saved. Try again.'); });
   const body = $('#toc-body', sheet);
   const go = word => { closeSheet(); seek(word, { undo: true }); };
@@ -1620,6 +1803,7 @@ function showSettings(startPage = null) {
     <input id="restore" type="file" accept=".zip,application/zip" style="position:absolute;opacity:0;width:1px;height:1px">
     <div class="set-row"><div class="set-line"><label for="s-backupTracks">Include your audio files in backups<small class="set-help">${tracks.length ? `Your files take about ${trackMb(tracks.reduce((n, t) => n + t.size, 0))}, which makes backups larger.` : 'Applies to audio files you add.'}</small></label>
       <input class="switch" type="checkbox" role="switch" id="s-backupTracks" data-k="backupTracks" ${S.backupTracks ? 'checked' : ''}></div></div>
+    <div class="set-row"><div class="set-line"><label for="s-backupNarration">Include audiobooks in backups<small class="set-help">Audiobooks can make backups much larger.</small></label><input class="switch" type="checkbox" role="switch" id="s-backupNarration" data-k="backupNarration" ${S.backupNarration ? 'checked' : ''}></div></div>
     <div class="menu-btn" id="storage-info"><span>Storage</span><small>Checking</small></div>
     <button class="menu-btn" data-a="reset">Reset settings to defaults</button>
     <button class="menu-btn danger" data-a="clear-stats">Clear reading stats</button>`;
@@ -1782,7 +1966,7 @@ function showSettings(startPage = null) {
       toast('Built-in tracks restored');
       return;
     }
-    if (action === 'backup') exportBackup();
+    if (action === 'backup') exportBackup().catch(error => toast(error.message || 'The backup could not be saved.', 7000));
     if (action === 'reset') {
       confirmSheet('Reset settings?', 'Your books, progress, and stats will stay as they are.', 'Reset settings', () => {
         S = { ...DEFAULTS, settingsVersion: 2 };
@@ -1815,7 +1999,16 @@ async function exportBackup() {
   const zip = new window.JSZip();
   const [books, contents, sessions] = await Promise.all([db.getAll('books'), db.getAll('contents'), db.getAll('sessions')]);
   const kept = S.backupTracks ? tracks : [];
-  zip.file('stillpoint.json', JSON.stringify({ app: 'stillpoint', version: 1, createdAt: Date.now(), settings: S, books, sessions, tracks: kept }));
+  const narrations = S.backupNarration ? await db.getAll('narrations') : [];
+  for (const record of narrations) {
+    zip.file(`narrations/${record.id}.json`, JSON.stringify(record.manifest));
+    for (const clip of record.manifest.clips) {
+      const audio = await db.get('narrationdata', `${record.id}:${clip.file}`);
+      if (!audio) throw new Error('An audiobook clip is missing. Import it again before backing up.');
+      zip.file(`narrations/${record.id}/${clip.file}`, audio.data);
+    }
+  }
+  zip.file('stillpoint.json', JSON.stringify({ app: 'stillpoint', version: 1, createdAt: Date.now(), settings: S, books, sessions, tracks: kept, narrationIds: narrations.map(n => n.id) }));
   contents.forEach(c => zip.file(`books/${c.id}.json`, JSON.stringify(c)));
   for (const track of kept) {
     const record = await db.get('trackdata', track.id);
@@ -1842,6 +2035,7 @@ async function exportBackup() {
   toast('Backup saved');
 }
 async function importBackup(file) {
+  if (R) pause({ animate: false });
   try {
     const zip = await window.JSZip.loadAsync(await file.arrayBuffer());
     const manifestFile = zip.file('stillpoint.json');
@@ -1856,6 +2050,24 @@ async function importBackup(file) {
       if (!Array.isArray(content.blocks) || typeof book.id !== 'string') continue;
       await db.saveBook(book, content);
       restored++;
+    }
+    let skippedNarrations = 0;
+    for (const id of data.narrationIds || []) {
+      if (typeof id !== 'string' || !/^[\w-]+$/.test(id)) continue;
+      try {
+        const entry = zip.file(`narrations/${id}.json`);
+        if (!entry) throw new Error('Missing audiobook');
+        const book = await db.get('books', id), content = await db.get('contents', id);
+        if (!book || !content) throw new Error('Missing book');
+        const manifest = validateManifest(JSON.parse(await entry.async('string')), await createNarrationJob(book, content));
+        const audio = [];
+        for (const clip of manifest.clips) {
+          const file = zip.file(`narrations/${id}/${clip.file}`);
+          if (!file) throw new Error('Missing audio clip');
+          audio.push({ file: clip.file, data: await file.async('blob') });
+        }
+        await db.saveNarration(id, manifest, audio);
+      } catch (error) { console.error(error); skippedNarrations++; }
     }
     const existing = new Set((await db.getAll('sessions')).map(s => `${s.bookId}|${s.at}`));
     for (const session of data.sessions || []) {
@@ -1882,8 +2094,9 @@ async function importBackup(file) {
     }
     fixSound();
     closeSheet();
-    toast(`Restored ${restored} ${restored === 1 ? 'book' : 'books'}${restoredTracks ? ` and ${restoredTracks} ${restoredTracks === 1 ? 'track' : 'tracks'}` : ''}`);
-    if (!R) showLibrary();
+    toast(`Restored ${restored} ${restored === 1 ? 'book' : 'books'}${restoredTracks ? ` and ${restoredTracks} ${restoredTracks === 1 ? 'track' : 'tracks'}` : ''}${skippedNarrations ? `. ${skippedNarrations} audiobook(s) could not be restored` : ''}`);
+    if (R) await openBook(R.book.id);
+    else showLibrary();
   } catch (error) {
     console.error(error);
     toast('This file is not a Stillpoint backup.');
@@ -2127,10 +2340,21 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowRight') seek(R.pos + S.rewind);
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden' && R) {
-    if (R.state !== 'paused') pause({ animate: false });
-    saveProgress(true);
+  if (!R) return;
+  if (document.hidden) {
+    if (narrating()) {
+      R.narration.setBackground(true);
+      R.narration.update(true);
+      releaseWake();
+      stopSound();
+    } else if (R.state !== 'paused') pause({ animate: false });
+  } else if (narrating()) {
+    R.narration.setBackground(false);
+    if (R.book.audioMode === 'page') showFlowAt(R.pos, true);
+    else renderWord(R.words[R.pos]);
+    updateMeta();
   }
+  if (document.hidden || narrating()) saveProgress(true);
 });
 addEventListener('pagehide', () => { if (R) { commitSession(); saveProgress(true); } });
 addEventListener('resize', () => { if (R) renderWord(R.lastText); });

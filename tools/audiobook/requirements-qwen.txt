@@ -1,0 +1,4 @@
+qwen-tts==0.1.1
+soundfile>=0.13,<0.15
+num2words==0.5.14
+imageio-ffmpeg>=0.6,<1

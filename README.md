@@ -2,6 +2,8 @@
 
 A private RSVP speed reader for iPhone. Books stay on your device.
 
+Local audiobook prototype: open **Audiobook** from a book's menu or the reader's speaker button. Export the reviewed text, generate narration on your computer, and import the resulting ZIP for synchronized text or RSVP playback. Setup, the interchange format, and current limits are documented in [tools/audiobook/README.md](tools/audiobook/README.md).
+
 Open the site in Safari, tap Share, then Add to Home Screen.
 
 Ambient sound can use your own audio files (MP3, M4A, WAV, or AAC). Add or remove tracks under Settings, Ambient sound. Each file loops over and over and is kept on the device.

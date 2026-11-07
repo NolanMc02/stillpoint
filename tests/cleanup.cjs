@@ -153,7 +153,12 @@ async function fixture() {
   await page.check('#keep-note');
   await page.selectOption('#announcements', 'none');
   await page.click('#book-add');
-  await page.waitForSelector('#reader');
+  // The old reader stays mounted behind the review sheet while saving.
+  // Wait for the new content, not merely the already-existing #reader element.
+  await page.waitForFunction(() => {
+    const R = window.__stillpoint.R;
+    return R?.blocks.some(b => b.t === 'LEGACY NOTE') && R.book.chapters.every(c => !c.announce);
+  });
   const saved = await page.evaluate(async()=>{
     const db=await import('/js/db.js');
     const books=await db.getAll('books');
