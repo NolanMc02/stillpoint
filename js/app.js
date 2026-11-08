@@ -792,7 +792,7 @@ function updateListeningControls() {
   const timer = R.sleepTimer?.state();
   if ($('#audio-options')) {
     const sleep = timer?.kind === 'duration' ? ` · ◷ ${audioClock(timer.remainingMs / 1000)}` : timer?.kind === 'chapter' ? ' · ◷ Ch' : '';
-    $('#audio-options').textContent = `${R.book.audioRate || 1}×${sleep} ▾`;
+    $('#audio-options').textContent = `${R.book.audioRate || 1}×${sleep ? ' ◷' : ''}`;
     $('#audio-options').setAttribute('aria-label', `Listening options, speed ${R.book.audioRate || 1} times${sleep ? ', sleep timer active' : ''}`);
   }
   if ($('#audio-times')) {
@@ -892,7 +892,7 @@ function showBookAppearance() {
       <button data-book-layout="pages" aria-pressed="${(R.book.bookLayout || 'pages') === 'pages'}"><b>▥</b>Pages</button>
       <button data-book-layout="scroll" aria-pressed="${R.book.bookLayout === 'scroll'}"><b>☷</b>Continuous scroll</button></div>
       ${field('Line spacing', select('textLead', [[1.4, 'Compact'], [1.65, 'Comfortable'], [1.9, 'Spacious']]))}
-      ${field('Margins', `<input type="range" aria-label="Book margins" data-book-setting="textMargin" min="12" max="52" step="2" value="${S.textMargin}">`)}
+      ${field('Side margins', `<input type="range" aria-label="Book margins" data-book-setting="textMargin" min="8" max="56" step="2" value="${S.textMargin}">`)}
       ${field('Alignment', select('textAlign', [['left', 'Left aligned'], ['justify', 'Justified']]))}
       ${field('Reading progress', select('bookProgress', [['page', 'Page in section'], ['percent', 'Book percentage'], ['time', 'Estimated time left'], ['none', 'Hidden']]))}
       <label class="book-check"><input type="checkbox" data-book-setting="bookIndent" ${S.bookIndent ? 'checked' : ''}>Indent paragraphs</label>
@@ -903,15 +903,21 @@ function showBookAppearance() {
     body.insertAdjacentHTML('beforeend', '<button class="menu-btn" id="all-reader-settings">All Stillpoint settings</button>');
     $('#all-reader-settings', body).onclick = () => showSettings();
   };
-  sheet.addEventListener('input', event => {
+  const updateAppearance = event => {
     const key = event.target.dataset.bookSetting;
-    if (!key) return;
-    owner.bookView.suppressUntil = performance.now() + 300;
-    S[key] = event.target.type === 'checkbox' ? event.target.checked
+    if (!key || R !== owner || !owner.bookView) return;
+    const value = event.target.type === 'checkbox' ? event.target.checked
       : ['textFont', 'textAlign', 'bookProgress'].includes(key) ? event.target.value : Number(event.target.value);
+    if (S[key] === value) return;
+    owner.bookView.suppressUntil = performance.now() + 300;
+    S[key] = value;
     R.animate = S.bookAnimation;
-    applySettings(); saveSettings(); R.bookView?.folio();
-  });
+    applySettings(); saveSettings();
+    // Flush the new margin width now, including Safari's paginated columns.
+    owner.bookView.showWord(owner.appearanceAnchor, true);
+  };
+  sheet.addEventListener('input', updateAppearance);
+  sheet.addEventListener('change', updateAppearance);
   sheet.addEventListener('click', event => {
     const tab = event.target.closest('[data-appearance]');
     if (tab) { draw(tab.dataset.appearance); return; }
@@ -983,6 +989,7 @@ function applyNarrationMode() {
   $('#r-mode').textContent = `${MODE_LABELS[readerMode()]} ▾`;
   $('#reader').classList.toggle('audio-page', active && R.book.audioMode === 'page');
   $('#audio-toolbar').hidden = !active;
+  $('#audio-options').hidden = !active;
   if (active) {
     $('#wpm-v').textContent = `${(R.book.audioRate || 1).toFixed(1)}×`;
     $('#wpm-box small').textContent = 'Audio';
@@ -1109,6 +1116,12 @@ async function openBook(id) {
   R?.narration?.dispose();
   const [book, content] = await Promise.all([db.get('books', id), db.get('contents', id)]);
   if (!book || !content) { toast('This book could not be found.'); showLibrary(); return; }
+  // Older Listen books used the original scroll renderer. Give existing books
+  // the same appearance, browsing, and fullscreen behavior as new imports.
+  if (savedMode(book) !== 'rsvp' && book.readingView !== 'book') {
+    book.bookLayout ||= 'scroll';
+    selectMode(book, savedMode(book));
+  }
   const index = buildIndex(content.blocks);
   const chapterStarts = book.chapters.map(c => index.blockStart[c.block] ?? 0);
   R = {
@@ -1178,7 +1191,7 @@ function renderReader() {
       <div id="scrub-wrap"><div id="scrub-track"><div id="scrub-fill"></div></div>
         <input id="scrub" type="range" min="0" max="${Math.max(0, R.words.length - 1)}" step="1" value="${R.pos}" aria-label="Position in book"></div>
       <div id="read-meta"><span id="m-pct"></span><span id="m-left"></span></div>
-      <div id="audio-toolbar" hidden><span id="audio-progress"></span><span id="audio-times"></span><button id="audio-options" aria-label="Listening options" aria-haspopup="dialog">1× ▾</button></div>
+      <div id="audio-toolbar" hidden><span id="audio-progress"></span><span id="audio-times"></span></div>
       <div id="controls">
         <div class="side">
           <button class="icon-btn" id="r-toc" aria-label="Chapters, bookmarks, and search">${icon('list')}</button>
@@ -1191,6 +1204,7 @@ function renderReader() {
           <button class="icon-btn" id="w-down" aria-label="Slower">${icon('minus')}</button>
           <button id="wpm-box" aria-label="Choose reading speed" aria-expanded="false" aria-controls="wpm-pop"><b id="wpm-v"></b><small>WPM</small></button>
           <button class="icon-btn" id="w-up" aria-label="Faster">${icon('plus')}</button>
+          <button id="audio-options" aria-label="Listening options" aria-haspopup="dialog" hidden>1×</button>
           <button class="icon-btn" id="r-fullscreen" aria-label="Fullscreen reading" aria-pressed="false" hidden>${icon('expand')}</button>
           <button class="icon-btn" id="r-sound" aria-label="Ambient sound">${icon('sound')}</button>
         </div>
@@ -1933,17 +1947,23 @@ function showStoryContext(position = null) {
   const cutoff = position === null ? R.pos : clamp(position, 0, R.words.length - 1);
   const snapshot = { book: { title: R.book.title, author: R.book.author, chapters: R.book.chapters.map(chapter => ({ ...chapter })) }, words: R.words, glue: R.glue, chapterStarts: [...R.chapterStarts], position: cutoff };
   const sheet = openSheet('Story help', `<div class="sheet-body stack">
-    <label for="story-kind">What would you like?</label><select class="field-text" id="story-kind"><option value="scene">Explain this scene</option><option value="summary">Summarize the book so far</option></select>
-    <p class="muted">Copy a prompt into your AI chat for a short scene explanation or a recap from the beginning to your cutoff. It includes your book, chapter, and a short passage marking your place. Nothing is sent automatically.</p>
+    <fieldset class="story-choices" id="story-kind"><legend>What would you like?</legend><button type="button" data-story-kind="scene" aria-pressed="true">Explain this scene</button><button type="button" data-story-kind="summary" aria-pressed="false">Summarize the book so far</button></fieldset>
+    <p class="muted">Copy a prompt into your AI chat. It includes the book, chapter progress, and a short passage ending at your place.</p>
     <button class="primary" id="story-copy">Copy prompt</button><p id="story-copy-status" class="muted" role="status">Only text up to the selected word is included. AI can still make mistakes or include spoilers despite these instructions.</p>
     <label for="story-prompt">Prompt to copy</label><textarea id="story-prompt" readonly spellcheck="false" aria-label="Story help prompt"></textarea>
-    <p class="muted">For a more precise cutoff while reading, hold a word and choose “Explain up to this word.” Closing this panel keeps playback paused.</p></div>`, { tall: true });
+    <p class="muted">Hold a word → Explain up to this word for an exact cutoff. Playback stays paused.</p></div>`, { tall: true });
   const field = $('#story-prompt', sheet);
+  let kind = 'scene';
   const refresh = () => {
-    field.value = buildStoryPrompt({ ...snapshot, kind: $('#story-kind', sheet).value });
+    field.value = buildStoryPrompt({ ...snapshot, kind });
+    $$('[data-story-kind]', sheet).forEach(button => button.setAttribute('aria-pressed', String(button.dataset.storyKind === kind)));
     $('#story-copy-status', sheet).textContent = 'Only text up to the selected word is included. AI can still make mistakes or include spoilers despite these instructions.';
   };
-  $('#story-kind', sheet).onchange = refresh; refresh();
+  $('#story-kind', sheet).onclick = event => {
+    const button = event.target.closest('[data-story-kind]');
+    if (button) { kind = button.dataset.storyKind; refresh(); }
+  };
+  refresh();
   $('#story-copy', sheet).onclick = async () => {
     const prompt = field.value;
     let copied = false;
@@ -2245,7 +2265,7 @@ function showSettings(startPage = null) {
   };
   const PREVIEW = { Appearance: 'text', RSVP: 'word' };
   const dataPage = () => `
-    <button class="menu-btn" data-a="app-update">Check for app updates<small>Load the latest reader and keep your place</small></button>
+    <button class="menu-btn" data-a="app-update">Check for app updates<small>Reader 20 · Load the latest reader and keep your place</small></button>
     <button class="menu-btn" data-a="backup">Save a backup<small>Includes your books, progress, bookmarks, stats, and settings</small><small id="last-backup">Save a copy outside this app</small></button>
     <label class="menu-btn" for="restore" style="cursor:pointer">Restore from a backup<small>Preview its contents and choose what to restore</small></label>
     <input id="restore" type="file" accept=".zip,application/zip" style="position:absolute;opacity:0;width:1px;height:1px">

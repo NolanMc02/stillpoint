@@ -68,4 +68,8 @@ One listening-options button controls speed, sleep, and background sound. **Aa**
 
 Story Help produces simple scene or book-so-far requests identifying title, author, current chapter, approximate percentage, and a short past-only excerpt ending at the cutoff. No fixed bullet-count instructions or long rules are included. External AI output remains outside Stillpoint’s control.
 
-Installed iPhone viewport sizing corrects small status/safe-area-sized height shortfalls only when screen width matches and no keyboard-sized viewport reduction is present. Browser tabs and zoomed views are excluded from the screen-height correction. Physical iPhone viewport and native blur acceptance is still required.
+Reader 20 uses the smaller usable layout/visual viewport and never expands to physical screen height. Controls retain the home-gesture inset plus twelve pixels of clearance; visible controls take priority over filling an OS-reserved empty area. Tests use an explicit Home Screen viewport, a masked unusable bottom region, and a narrow phone layout. Desktop WebKit still cannot validate the native iOS compositor.
+
+Older Listen/Read books using the original renderer are normalized to the current book view at open, preserving text, narration, bookmarks, and word position. This also gives existing books the actual-book live appearance preview and fullscreen controls. Margin changes respond to input and change events and flush the new page-column width immediately.
+
+Listening options share the bottom transport row. Story Help uses two explicit buttons instead of a native select; its scrolling content cannot shrink controls below their readable height. Prompts include the current chapter title and word-based chapter percentage as well as book progress. App updates are labeled Reader 20.

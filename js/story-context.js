@@ -10,7 +10,9 @@ export function buildStoryPrompt({ book, words, glue = [], chapterStarts = [], p
   while (start < cutoff && words.slice(start, cutoff + 1).join(' ').length > 600) start++;
   const excerpt = words.slice(start, cutoff + 1).map((word, offset) => word + (glue[start + offset] ? '' : ' ')).join('').trim();
   const percent = ((cutoff + 1) / words.length * 100).toFixed(1);
-  return `I’m reading ${String(book.title || 'Untitled')}${book.author ? ` by ${book.author}` : ''}, ${chapter ? `in ${chapter.title}, ` : ''}about ${percent}% through the book.
+  const chapterLength = chapter ? Math.max(1, (chapterStarts[chapterIndex + 1] ?? words.length) - chapterStarts[chapterIndex]) : 0;
+  const chapterPercent = chapter ? Math.min(100, (cutoff - chapterStarts[chapterIndex] + 1) / chapterLength * 100).toFixed(1) : null;
+  return `I’m reading ${String(book.title || 'Untitled')}${book.author ? ` by ${book.author}` : ''}, ${chapter ? `in chapter “${chapter.title}”, about ${chapterPercent}% through this chapter and ` : ''}about ${percent}% through the book.
 
 My current passage ends here:
 “${excerpt}”

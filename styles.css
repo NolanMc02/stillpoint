@@ -23,7 +23,7 @@
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); overscroll-behavior: none; }
-body { height: var(--app-height, 100dvh); font: 16px/1.4 var(--ui); -webkit-text-size-adjust: 100%; overflow: hidden; position: fixed; inset: 0; }
+body { height: min(100%, var(--app-height, 100dvh)); font: 16px/1.4 var(--ui); -webkit-text-size-adjust: 100%; overflow: hidden; position: fixed; inset: 0; }
 #app { position: absolute; inset: 0; }
 button, input, select, textarea { font: inherit; color: inherit; }
 body, body * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
@@ -75,7 +75,7 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 .mode-choices button:disabled { opacity: .4; }
 #reader.has-audio #wpm-box, #reader.has-audio #w-up, #reader.has-audio #w-down { display: none; }
 #reader.read-mode #play { width: auto; border-radius: 22px; padding: 0 16px; height: 44px; font-size: 14px; }
-#audio-toolbar { display: flex; align-items: center; gap: 6px; min-height: 36px; margin-top: 0; }
+#audio-toolbar { display: flex; align-items: center; gap: 6px; min-height: 18px; margin-top: 0; }
 #audio-progress { flex: none; color: var(--dim); font-size: 12px; min-width: 27px; font-variant-numeric: tabular-nums; }
 #reader.has-audio #read-meta { display: none; }
 #audio-toolbar[hidden], .audio-skip[hidden] { display: none; }
@@ -201,7 +201,7 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 #chapter-btn:active { background: var(--faint); }
 #chapter-btn b { font-weight: 600; font-size: 15px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #chapter-btn small { color: var(--dim); font-size: 12.5px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#bottom-bar { bottom: 0; padding: 2px calc(var(--safe-r) + 16px) calc(var(--safe-b) + 4px) calc(var(--safe-l) + 16px); touch-action: none; }
+#bottom-bar { bottom: 0; padding: 2px calc(var(--safe-r) + 16px) calc(var(--safe-b) + 12px) calc(var(--safe-l) + 16px); touch-action: none; }
 .playing .bar, .starting .bar { opacity: 0; pointer-events: none; }
 .playing #top-bar, .starting #top-bar { transform: translateY(-16px); }
 .playing #bottom-bar, .starting #bottom-bar { transform: translateY(16px); }
@@ -251,7 +251,7 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 .sheet-head { position: relative; display: flex; align-items: center; padding: 16px 10px 6px 22px; gap: 8px; touch-action: none; }
 .sheet-head::before { content: ''; position: absolute; top: 6px; left: 50%; width: 38px; height: 5px; margin-left: -19px; border-radius: 3px; background: var(--faint); }
 .sheet-head h2 { flex: 1; margin: 0; font: 500 24px/1.2 var(--serif); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sheet-body { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 4px 22px calc(var(--safe-b) + 24px); }
+.sheet-body { min-height: 0; flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 4px 22px calc(var(--safe-b) + 24px); }
 .sheet-body > p:first-child { margin-top: 2px; }
 .menu-btn { display: block; width: 100%; text-align: left; padding: 14px 0; border-bottom: 1px solid var(--faint); font-size: 17px; }
 .menu-btn:last-child { border-bottom: 0; }
@@ -464,7 +464,7 @@ label.menu-btn:active { opacity: .55; }
 .track-ask .secondary { min-height: 36px; padding: 0 14px; font-size: 15px; }
 @keyframes jump-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
 
-#story-prompt { width: 100%; min-height: 190px; max-height: 38vh; resize: vertical; padding: 12px; border: 1px solid var(--faint); border-radius: 12px; background: var(--panel); font: 13px/1.5 var(--ui); overflow-y: auto; }
+#story-prompt { width: 100%; min-height: 190px; max-height: 38vh; resize: vertical; padding: 12px; border: 1px solid var(--faint); border-radius: 12px; background: var(--panel); font: 16px/1.5 var(--ui); overflow-y: auto; }
 
 /* The book itself remains visible and usable above the appearance controls. */
 #sheets > .scrim.appearance-scrim { background: transparent; pointer-events: none; }
@@ -482,3 +482,18 @@ label.menu-btn:active { opacity: .55; }
 .appearance-scrim .book-layout-choices b, .appearance-scrim .book-theme-choices b { font-size: 20px; }
 .appearance-scrim .book-setting select { min-height: 40px; padding: 8px 10px; margin-top: 6px; }
 .appearance-scrim .sheet-body { padding-bottom: calc(var(--safe-b) + 12px); }
+
+/* Keep all transport/options controls on one row, with no fixed-width side boxes. */
+#reader.has-audio #controls { display: flex; align-items: center; justify-content: space-between; gap: 1px; }
+#reader.has-audio #controls .side { display: contents; }
+#reader.has-audio #controls .icon-btn { flex: 0 1 36px; min-width: 28px; }
+#reader.has-audio #controls .audio-skip { flex: 0 1 40px; min-width: 30px; }
+#reader.has-audio #controls #play { flex: 0 0 52px; }
+#reader.has-audio #audio-options { flex: 0 1 46px; min-width: 36px; min-height: 44px; padding: 4px; }
+#audio-options[hidden] { display: none; }
+.stack > * { flex-shrink: 0; }
+.stack > select { min-height: 44px; line-height: 1.3; }
+.story-choices { margin: 0; padding: 0; border: 0; min-width: 0; display: grid; gap: 8px; }
+.story-choices legend { padding: 0; margin-bottom: 10px; }
+.story-choices button { min-height: 46px; padding: 10px 14px; border: 1px solid var(--faint); border-radius: 12px; text-align: left; background: var(--panel); line-height: 1.4; }
+.story-choices button[aria-pressed=true] { border: 2px solid var(--hi); padding: 9px 13px; font-weight: 600; }

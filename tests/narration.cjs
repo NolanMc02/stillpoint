@@ -60,11 +60,12 @@ async function packageFor(job) {
     });
     const page = await context.newPage();
     const readFromHere = async index => {
-      await page.locator(`#flow-inner [data-i="${index}"]`).dispatchEvent('pointerdown', {
+      const inBook = await page.locator('#book-view').isVisible();
+      await page.locator(`${inBook ? '.book-text' : '#flow-inner'} [data-i="${index}"]`).dispatchEvent('pointerdown', {
         pointerId: 71, pointerType: 'touch', button: 0, clientX: 120, clientY: 300,
       });
       await page.waitForSelector('[data-a="start"]');
-      await page.locator('#reader').dispatchEvent('pointerup', { pointerId: 71, pointerType: 'touch', clientX: 120, clientY: 300 });
+      await page.locator(inBook ? '.book-viewport' : '#reader').dispatchEvent('pointerup', { pointerId: 71, pointerType: 'touch', clientX: 120, clientY: 300 });
       await page.click('[data-a="start"]');
       await page.waitForFunction(i => __stillpoint.R.pos === i && __stillpoint.R.state === 'paused', index);
       await page.waitForTimeout(400);
@@ -126,37 +127,38 @@ async function packageFor(job) {
     await page.waitForFunction(() => !!window.__stillpoint.R?.narration);
     check('import attaches audio to the existing book', await page.evaluate(() => __stillpoint.R.book.audioMode === 'page'));
     await page.evaluate(async () => { const db = await import('/js/db.js'), book = __stillpoint.R.book; delete book.readerMode; book.readingView = 'rsvp'; await db.put('books', book); });
-    await page.click('#r-back'); await page.waitForSelector('.book-title'); await page.click('.book-title'); await page.waitForSelector('#flow-inner .w.cur');
+    await page.click('#r-back'); await page.waitForSelector('.book-title'); await page.click('.book-title'); await page.waitForSelector('.book-text .bw.current');
     check('imported media has an audio MIME type on its playback URL', await page.evaluate(() => {
       const player = __stillpoint.R.narration;
       const blob = __audioBlobs.get(player.audio.src);
       return blob.type === (player.manifest.clips[0].file.endsWith('.m4a') ? 'audio/mp4' : 'audio/wav');
     }));
     await page.evaluate(() => { __stillpoint.S.tapToPlay = true; __stillpoint.S.holdMode = true; });
-    await page.locator('#flow-inner .w.cur').tap();
+    await page.locator('.book-text .bw.current').tap();
+    await page.locator('.book-viewport').tap();
     await page.waitForTimeout(200);
     check('tapping paused text never starts playback, including with old control settings', await page.evaluate(() =>
       __stillpoint.R.state === 'paused' && __stillpoint.R.narration.audio.paused));
     await page.click('#play');
     await page.waitForFunction(() => __stillpoint.R.pos >= 2 && __stillpoint.R.state === 'playing');
     check('audio clock advances and highlights scrolling text', await page.evaluate(() =>
-      document.querySelector('.w.cur')?.textContent === __stillpoint.R.words[__stillpoint.R.pos]
-      && getComputedStyle(document.querySelector('#flow')).opacity === '1'));
+      (document.querySelector('.book-text .bw.current') || document.querySelector('#flow-inner .w.cur'))?.textContent === __stillpoint.R.words[__stillpoint.R.pos]
+      && getComputedStyle(document.querySelector('.book-viewport')).display !== 'none'));
     check('system media controls expose book metadata and playback actions', await page.evaluate(() =>
       navigator.mediaSession.metadata.title === __stillpoint.R.book.title
       && ['play', 'pause', 'seekto', 'seekforward', 'seekbackward'].every(a => typeof __mediaActions[a] === 'function')));
     const hiddenStart = await page.evaluate(() => {
       __setHidden(true);
-      return { time: __stillpoint.R.narration.audio.currentTime, word: document.querySelector('.w.cur').dataset.i };
+      return { time: __stillpoint.R.narration.audio.currentTime, word: (document.querySelector('.book-text .bw.current') || document.querySelector('#flow-inner .w.cur')).dataset.i };
     });
     await page.waitForTimeout(1000);
     check('simulated screen hiding leaves native audio playing without visual updates', await page.evaluate(before =>
       __stillpoint.R.state === 'playing' && !__stillpoint.R.narration.audio.paused
       && __stillpoint.R.narration.background && __stillpoint.R.narration.audio.currentTime > before.time + 0.5
-      && document.querySelector('.w.cur').dataset.i === before.word, hiddenStart));
+      && (document.querySelector('.book-text .bw.current') || document.querySelector('#flow-inner .w.cur')).dataset.i === before.word, hiddenStart));
     await page.evaluate(() => __setHidden(false));
     check('returning to the reader resynchronizes the current word', await page.evaluate(() =>
-      !__stillpoint.R.narration.background && document.querySelector('.w.cur').textContent === __stillpoint.R.words[__stillpoint.R.pos]));
+      !__stillpoint.R.narration.background && (document.querySelector('.book-text .bw.current') || document.querySelector('#flow-inner .w.cur')).textContent === __stillpoint.R.words[__stillpoint.R.pos]));
     await page.evaluate(() => __mediaActions.pause());
     await page.waitForFunction(() => __stillpoint.R.state === 'paused');
     check('system pause stops narration', await page.evaluate(() => __stillpoint.R.narration.audio.paused && navigator.mediaSession.playbackState === 'paused'));
@@ -179,7 +181,7 @@ async function packageFor(job) {
     check('pause stops audio and word advancement', await page.evaluate(pos => __stillpoint.R.pos === pos && __stillpoint.R.narration.audio.paused, paused));
     check('Read from here seeks narration and waits for Play', await readFromHere(8));
     check('native text selection and callout are suppressed', await page.evaluate(() => {
-      const word = document.querySelector('#flow-inner .w');
+      const word = document.querySelector('.book-text .bw') || document.querySelector('#flow-inner .w');
       return !word.dispatchEvent(new Event('selectstart', { bubbles: true, cancelable: true }))
         && !word.dispatchEvent(new Event('contextmenu', { bubbles: true, cancelable: true }));
     }));
@@ -256,6 +258,7 @@ async function packageFor(job) {
     await page.click('[data-close]');
     // Exercise the normal backup path, including audiobook binary data.
     await page.click('#r-settings');
+    if (await page.locator('#all-reader-settings').count()) await page.click('#all-reader-settings');
     await page.click('[data-page="Library and data"]');
     await page.click('[data-a="backup"]');
     await page.waitForSelector('#backup-save');
@@ -268,7 +271,8 @@ async function packageFor(job) {
     await page.evaluate(async () => { const db = await import('/js/db.js'); await db.removeNarration('narration-test'); });
     await page.evaluate(() => { __stillpoint.R.pos = 0; __stillpoint.R.book.pos = 0; });
     await page.click('[data-close]');
-    await page.click('#r-settings'); await page.click('[data-page="Library and data"]');
+    await page.click('#r-settings');
+    if (await page.locator('#all-reader-settings').count()) await page.click('#all-reader-settings'); await page.click('[data-page="Library and data"]');
     await page.setInputFiles('#restore', { name: 'backup.zip', mimeType: 'application/zip', buffer: backupBytes });
     await page.waitForSelector('#restore-start');
     await page.check('#restore-replace');
