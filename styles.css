@@ -201,7 +201,7 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 #chapter-btn:active { background: var(--faint); }
 #chapter-btn b { font-weight: 600; font-size: 15px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #chapter-btn small { color: var(--dim); font-size: 12.5px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#bottom-bar { bottom: 0; padding: 2px calc(var(--safe-r) + 16px) calc(var(--safe-b) + var(--bottom-clearance) + 12px) calc(var(--safe-l) + 16px); touch-action: none; }
+#bottom-bar { bottom: min(0px, calc(var(--safe-b) + var(--bottom-clearance) + 12px)); padding: 2px calc(var(--safe-r) + 16px) max(0px, calc(var(--safe-b) + var(--bottom-clearance) + 12px)) calc(var(--safe-l) + 16px); touch-action: none; }
 .playing .bar, .starting .bar { opacity: 0; pointer-events: none; }
 .playing #top-bar, .starting #top-bar { transform: translateY(-16px); }
 .playing #bottom-bar, .starting #bottom-bar { transform: translateY(16px); }
@@ -399,7 +399,7 @@ textarea.field-text { min-height: 180px; resize: vertical; font-family: var(--se
 /* Opaque, hit-testable safe-area backing stops before any reader controls. */
 .edge { position: absolute; left: 0; right: 0; background: var(--bg); z-index: 15; }
 .edge-top { top: 0; height: var(--safe-t); }
-.edge-bottom { bottom: 0; height: var(--safe-b); }
+.edge-bottom { bottom: 0; height: max(0px, calc(var(--safe-b) + min(0px, var(--bottom-clearance)))); }
 
 /* Motion */
 button { transition: transform .24s cubic-bezier(.2,.8,.2,1), opacity .16s ease, background-color .16s ease, color .16s ease, border-color .16s ease; }

@@ -170,7 +170,7 @@ function applySettings() {
   const vars = {
     '--bg': c.bg, '--ink': c.ink, '--hi': c.hi,
     '--header-clearance': `${clamp(Number(S.clearanceTop) || 0, 0, 160)}px`,
-    '--bottom-clearance': `${clamp(Number(S.clearanceBottom) || 0, 0, 160)}px`,
+    '--bottom-clearance': `${clamp(Number(S.clearanceBottom) || 0, -80, 160)}px`,
     '--word-font': FONTS[S.wordFont]?.[1], '--word-size': `${S.wordSize}px`, '--word-weight': S.wordWeight,
     '--word-y': `${S.wordY}%`, '--pivot-x': `${S.pivotX}%`,
     '--guide-dist': S.guideDist / 100, '--guide-shift': S.guides ? (S.guideDist / 100 - 1) * 0.86 : 0,
@@ -857,14 +857,14 @@ function setReaderFullscreen(hidden) {
 function showClearanceSettings() {
   if (R) pause({ animate: false });
   const sheet = openSheet('Screen clearance', `<div class="sheet-body">
-    <p class="muted">Top moves the header down. Bottom moves the player up. Watch the reader behind this panel as you adjust.</p>
-    ${[['clearanceTop', 'Top clearance'], ['clearanceBottom', 'Bottom clearance']].map(([key, label]) => `<div class="set-row"><div class="set-line"><label for="${key}">${label}</label><output id="${key}-value" for="${key}">${S[key] || 0} px</output></div><input id="${key}" type="range" min="0" max="160" step="2" value="${S[key] || 0}" aria-label="${label}"></div>`).join('')}
+    <p class="muted">Top moves the header down. Positive Bottom values lift the player; negative values move it lower. Changes preview live.</p>
+    ${[['clearanceTop', 'Top clearance'], ['clearanceBottom', 'Bottom clearance']].map(([key, label]) => `<div class="set-row"><div class="set-line"><label for="${key}">${label}</label><output id="${key}-value" for="${key}">${S[key] || 0} px</output></div><input id="${key}" type="range" min="${key === 'clearanceBottom' ? -80 : 0}" max="160" step="2" value="${S[key] || 0}" aria-label="${label}"></div>`).join('')}
     <button class="secondary" id="clearance-reset">Reset clearance</button>
     </div>`);
   sheet.parentElement.classList.add('clearance-scrim');
   const update = () => {
     for (const key of ['clearanceTop', 'clearanceBottom']) {
-      S[key] = clamp(Number($(`#${key}`, sheet).value) || 0, 0, 160);
+      S[key] = clamp(Number($(`#${key}`, sheet).value) || 0, key === 'clearanceBottom' ? -80 : 0, 160);
       $(`#${key}-value`, sheet).textContent = `${S[key]} px`;
     }
     applySettings(); saveSettings();
@@ -2292,7 +2292,7 @@ function showSettings(startPage = null) {
   };
   const PREVIEW = { Appearance: 'text', RSVP: 'word' };
   const dataPage = () => `
-    <button class="menu-btn" data-a="app-update">Check for app updates<small>Reader 21 · Load the latest reader and keep your place</small></button>
+    <button class="menu-btn" data-a="app-update">Check for app updates<small>Reader 22 · Load the latest reader and keep your place</small></button>
     <button class="menu-btn" data-a="screen-clearance">Screen clearance<small>Adjust the top header and bottom player positions</small></button>
     <button class="menu-btn" data-a="backup">Save a backup<small>Includes your books, progress, bookmarks, stats, and settings</small><small id="last-backup">Save a copy outside this app</small></button>
     <label class="menu-btn" for="restore" style="cursor:pointer">Restore from a backup<small>Preview its contents and choose what to restore</small></label>

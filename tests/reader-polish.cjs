@@ -229,6 +229,11 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     check('top and bottom clearance survive reopening', await page.evaluate(() => __stillpoint.S.clearanceTop === 40 && __stillpoint.S.clearanceBottom === 60 && getComputedStyle(document.documentElement).getPropertyValue('--bottom-clearance') === '60px'));
     await page.click('#r-settings'); await page.click('[data-appearance="layout"]'); await page.click('#screen-clearance'); await page.click('#clearance-reset'); await page.waitForTimeout(100);
     check('Reset clearance restores both defaults without resetting appearance or the book', await page.evaluate(pos => __stillpoint.S.clearanceTop === 0 && __stillpoint.S.clearanceBottom === 0 && __stillpoint.S.textMargin === 50 && __stillpoint.R.pos === pos, clearanceBaseline.pos));
+    await page.locator('#clearanceBottom').fill('-20'); await page.waitForTimeout(250);
+    await page.click('[data-close]'); await page.waitForTimeout(150);
+    check('negative bottom clearance lowers the actual player without covering its hit target', await page.evaluate(before => { const play = document.querySelector('#play'), r = play.getBoundingClientRect(); return Math.abs(r.bottom - before.bottom - 20) < 1 && document.elementFromPoint(r.x + r.width / 2, r.bottom - 2)?.closest('button') === play && __stillpoint.S.clearanceBottom === -20; }, clearanceBaseline));
+    await page.reload(); await page.waitForSelector('.book-viewport');
+    check('negative clearance is preserved across reopening', await page.evaluate(() => __stillpoint.S.clearanceBottom === -20 && getComputedStyle(document.documentElement).getPropertyValue('--bottom-clearance') === '-20px'));
     check('no application errors', errors.length === 0);
     console.log(`${count} reader polish checks passed`);
   } finally { if (browser) await browser.close(); fs.rmSync(temporary, { recursive: true, force: true }); }
