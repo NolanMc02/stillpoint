@@ -1881,16 +1881,24 @@ function showStoryContext(position = null) {
     clearTimeout(R.bookView.scrollTimer); R.pos = R.bookView.firstVisible(); updateMeta(); saveProgress(true);
   }
   const cutoff = position === null ? R.pos : clamp(position, 0, R.words.length - 1);
-  const prompt = buildStoryPrompt({ book: R.book, words: R.words, glue: R.glue, chapterStarts: R.chapterStarts, position: cutoff });
-  const sheet = openSheet('What’s happening here?', `<div class="sheet-body stack">
-    <p class="muted">Copy this prompt into your AI chat for a short explanation. It contains your book, chapter, reading cutoff, and preceding text. Nothing is sent automatically.</p>
+  const snapshot = { book: { title: R.book.title, author: R.book.author, chapters: R.book.chapters.map(chapter => ({ ...chapter })) }, words: R.words, glue: R.glue, chapterStarts: [...R.chapterStarts], position: cutoff };
+  const sheet = openSheet('Story help', `<div class="sheet-body stack">
+    <label for="story-kind">What would you like?</label><select class="field-text" id="story-kind"><option value="scene">Explain this scene</option><option value="summary">Summarize the book so far</option></select>
+    <p class="muted">Copy a prompt into your AI chat for a short scene explanation or a recap from the beginning to your cutoff. It includes your book, chapter, reading cutoff, and recent preceding text. Nothing is sent automatically.</p>
     <button class="primary" id="story-copy">Copy prompt</button><p id="story-copy-status" class="muted" role="status">Only text up to the selected word is included. AI can still make mistakes or include spoilers despite these instructions.</p>
-    <label for="story-prompt">Prompt to copy</label><textarea id="story-prompt" readonly spellcheck="false" aria-label="Story explanation prompt"></textarea>
+    <label for="story-prompt">Prompt to copy</label><textarea id="story-prompt" readonly spellcheck="false" aria-label="Story help prompt"></textarea>
     <p class="muted">For a more precise cutoff while reading, hold a word and choose “Explain up to this word.” Closing this panel keeps playback paused.</p></div>`, { tall: true });
-  const field = $('#story-prompt', sheet); field.value = prompt;
+  const field = $('#story-prompt', sheet);
+  const refresh = () => {
+    field.value = buildStoryPrompt({ ...snapshot, kind: $('#story-kind', sheet).value });
+    $('#story-copy-status', sheet).textContent = 'Only text up to the selected word is included. AI can still make mistakes or include spoilers despite these instructions.';
+  };
+  $('#story-kind', sheet).onchange = refresh; refresh();
   $('#story-copy', sheet).onclick = async () => {
+    const prompt = field.value;
     let copied = false;
     try { if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(prompt); copied = true; } } catch {}
+    if (field.value !== prompt) return;
     if (!copied) {
       field.focus(); field.select(); field.setSelectionRange(0, field.value.length);
       try { copied = document.execCommand('copy'); } catch {}

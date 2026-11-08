@@ -79,6 +79,15 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     check('prompt explicitly requests concise explanations without completing sentences or foreshadowing', prompt.includes('3–5 short bullets') && prompt.includes('150 words') && prompt.includes('Do not finish an incomplete sentence') && prompt.includes('hint at future importance'));
     await page.click('#story-copy');
     check('Copy prompt copies the frozen snapshot', await page.evaluate(() => window.__copied === document.querySelector('#story-prompt').value)); await shot('story-prompt');
+    await page.selectOption('#story-kind', 'summary');
+    const summary = await page.locator('#story-prompt').inputValue();
+    check('book recap asks for events from the beginning to the cutoff', summary.startsWith('Summarize this book from its beginning') && summary.includes('5–7 short bullets') && summary.includes('250 words'));
+    check('recap keeps the same exact cutoff and excludes unread words and future chapter labels', summary.includes('word 91 of 1000') && !summary.includes('FUTURE_SECRET_SENTINEL') && !summary.includes('FUTURE_CHAPTER_SENTINEL'));
+    check('recap asks for earlier text rather than invented plot when book knowledge is insufficient', summary.includes('location marker, not the full earlier book') && summary.includes('ask me for earlier text instead of inventing a recap'));
+    await page.click('#story-copy');
+    check('copying after switching copies the recap rather than the scene prompt', await page.evaluate(() => window.__copied === document.querySelector('#story-prompt').value) && summary !== prompt);
+    await page.selectOption('#story-kind', 'scene');
+    check('switching help types preserves the frozen reading point and paused playback', await page.locator('#story-prompt').inputValue() === prompt && await page.evaluate(() => __stillpoint.R.pos === 90 && __stillpoint.R.state === 'paused' && __stillpoint.R.narration.audio.paused));
     await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new DOMException('blocked', 'NotAllowedError'); }; document.execCommand = () => false; });
     await page.click('#story-copy');
     check('blocked clipboard access offers selectable text without falsely reporting success', (await page.locator('#story-copy-status').innerText()).includes('blocked') && await page.locator('#story-prompt').evaluate(el => getComputedStyle(el).webkitUserSelect === 'text'));
