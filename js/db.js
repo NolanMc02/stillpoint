@@ -1,4 +1,5 @@
 // Local storage on the device, using IndexedDB.
+import { savedMode, selectMode, summarizeAudio } from './reading-state.js';
 const NAME = 'stillpoint';
 let db;
 
@@ -103,7 +104,7 @@ async function saveNarrationBundle(bookId, manifest, audio, book, content, onPro
       if (parts !== 1) records.push({ id, bookId, parts, partPrefix: prefix, size: clip.data.size, type: clip.data.type });
     }
     await new Promise((resolve, reject) => {
-      const tx = db.transaction(book ? ['books', 'contents', 'narrations', 'narrationdata'] : ['narrations', 'narrationdata'], 'readwrite');
+      const tx = db.transaction(book ? ['books', 'contents', 'narrations', 'narrationdata'] : ['books', 'narrations', 'narrationdata'], 'readwrite');
       const store = tx.objectStore('narrationdata'), keep = new Set(staged);
       const request = store.index('bookId').openCursor(IDBKeyRange.only(bookId));
       request.onsuccess = () => {
@@ -111,7 +112,11 @@ async function saveNarrationBundle(bookId, manifest, audio, book, content, onPro
         if (cursor) { if (!keep.has(cursor.primaryKey)) cursor.delete(); cursor.continue(); return; }
         for (const record of records) store.put(record);
         tx.objectStore('narrations').put({ id: bookId, manifest });
-        if (book) { tx.objectStore('books').put(book); tx.objectStore('contents').put(content); }
+        if (book) { tx.objectStore('books').put(summarizeAudio(book, manifest)); tx.objectStore('contents').put(content); }
+        else {
+          const old = tx.objectStore('books').get(bookId);
+          old.onsuccess = () => { if (old.result) tx.objectStore('books').put(summarizeAudio(old.result, manifest)); };
+        }
       };
       tx.oncomplete = () => resolve();
       tx.onerror = event => reject(event.target.error || tx.error);
@@ -146,9 +151,16 @@ export function saveGeneratedBook(book, content, manifest, audio, onProgress) {
 
 export function removeNarration(bookId) {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(['narrations', 'narrationdata'], 'readwrite');
+    const tx = db.transaction(['books', 'narrations', 'narrationdata'], 'readwrite');
     tx.objectStore('narrations').delete(bookId);
     deleteNarrationData(tx, bookId);
+    const book = tx.objectStore('books').get(bookId);
+    book.onsuccess = () => {
+      if (!book.result) return;
+      const metadata = { ...book.result, audioReady: false, audioDurationMs: 0, audioRemainingMs: 0, rsvpAudio: false, audioMode: 'off' };
+      if (savedMode(book.result) === 'listen') selectMode(metadata, 'read');
+      tx.objectStore('books').put(metadata);
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error);

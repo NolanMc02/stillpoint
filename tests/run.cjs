@@ -91,7 +91,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await shot('04-paused');
 
   const anchor = () => sp(() => { const r = document.querySelector('#w-pivot').getBoundingClientRect(); return r.left + r.width / 2; });
-  // Default settings: countdown then RSVP
+  // Explicitly choose RSVP before testing its default countdown.
+  await page.click('#r-mode'); await page.click('[data-mode="rsvp"]'); await page.click('[data-close]');
   const start = await sp(() => __stillpoint.R.pos);
   await page.tap('#flow-inner p');
   await sleep(150);

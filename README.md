@@ -2,7 +2,11 @@
 
 A private reader for iPhone with RSVP, reflowable pages, continuous scrolling, and synchronized local audiobooks. Books stay on your device.
 
-Use the **book icon** in the reader to switch between Book and RSVP views. In Book view, **Aa** offers pages or continuous scrolling, fonts, text size, boldness, spacing, margins, alignment, themes, page dimming, and progress display. Swipe or tap page edges to turn; tap the center to show or hide controls. Reading position is shared with RSVP and narration. Native text selection, highlights, and notes are disabled. Only Play starts an RSVP session.
+Use the labeled **Read / Listen / RSVP** button at the top of the reader to choose a mode. Mode changes preserve the current word and pause playback. Read offers pages or scrolling; Listen offers optional text following; RSVP can use independent WPM pacing or audiobook voice and timing. In Read and text-following Listen views, **Aa** offers pages or continuous scrolling, fonts, text size, boldness, spacing, margins, alignment, themes, page dimming, and progress display. Swipe or tap page edges to turn; tap the center to show or hide controls. Reading position is shared with RSVP and narration. Native text selection, highlights, and notes are disabled. Only Play (or the explicitly labeled Start RSVP shortcut in Read) starts an RSVP session.
+
+The library has a prominent Continue card with the last-used mode, chapter, cover, and mode-specific remaining time. Opening it stays paused. Audio availability is shown on each book; lightweight audio summaries keep library browsing separate from audio loading.
+
+Listen and narrated RSVP provide **Back 15 seconds**, **Forward 15 seconds**, playback speed, and chapter/book time remaining. The **Sleep** button offers 5–60 minutes or the end of the current chapter. Duration timers count wall-clock time, including pauses. Timers stop narration and background sound, reset when leaving the book, and are checked through native media events as well as a clock. Actual iPhone locked-screen timing still needs device acceptance testing. Playback failures offer Reload audio, Audiobook options, and Read instead; reloading stays paused.
 
 Settings are grouped into **Appearance**, **RSVP**, **Audio**, **Reading goal**, and **Library and data**. Detailed word, focus, timing, and gesture controls live in expandable sections. **RSVP → Surrounding words** optionally shows one to three faint words on each side of the current flash without moving its focus point; it is off by default.
 
@@ -33,6 +37,7 @@ Additional browser regression checks (install `playwright` and `jszip`):
 ```sh
 node tests/cleanup.cjs
 node tests/reader-upgrades.cjs
+node tests/reading-iteration.cjs
 node tests/audiobook-zip.cjs
 node tests/large-audiobook.cjs
 node tests/examples.cjs /path/to/folder-containing-example-epubs-and-example-pdfs

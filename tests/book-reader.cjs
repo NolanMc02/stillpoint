@@ -22,6 +22,7 @@ const check = (label, value) => { assert.ok(value, label); console.log(`PASS ${l
       return route.fulfill({ body: fs.readFileSync(file), contentType: ({ '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' })[path.extname(file)] || 'application/octet-stream' });
     });
     await page.goto('http://localhost:8123/'); await page.waitForSelector('#empty-add');
+    const chooseMode = async value => { await page.click('#r-mode'); await page.click(`[data-mode="${value}"]`); await page.click('[data-close]'); };
     await page.evaluate(async () => {
       const db = await import('/js/db.js'); const { buildIndex } = await import('/js/engine.js');
       const blocks = [], chapters = [];
@@ -35,7 +36,7 @@ const check = (label, value) => { assert.ok(value, label); console.log(`PASS ${l
       await db.put('kv', 'book-view-test', 'lastBook');
     });
     await page.reload(); await page.waitForSelector('#reader');
-    await page.click('#r-book'); await page.waitForSelector('.book-viewport');
+    await chooseMode('read'); await page.waitForSelector('.book-viewport');
     await page.waitForTimeout(250);
     check('book mode opens at the same reading word', await page.evaluate(() => {
       const R = __stillpoint.R, word = R.bookView.wordEl(R.pos).getBoundingClientRect(), view = R.bookView.viewport.getBoundingClientRect();
@@ -78,13 +79,13 @@ const check = (label, value) => { assert.ok(value, label); console.log(`PASS ${l
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'book-scroll.png') });
     await page.click('#r-back'); await page.click('.book-title'); await page.waitForSelector('.book-viewport');
     check('book layout and position survive reopening', await page.evaluate(pos => __stillpoint.R.pos === pos && __stillpoint.R.bookView.layout === 'scroll', saved));
-    await page.click('#r-book'); await page.waitForSelector('#flow-inner .w.cur');
+    await chooseMode('rsvp'); await page.waitForSelector('#flow-inner .w.cur');
     check('switching to RSVP preserves the same word', await page.evaluate(pos => __stillpoint.R.pos === pos && document.querySelector('#flow-inner .w.cur').textContent === __stillpoint.R.words[pos], saved));
     await page.evaluate(() => __stillpoint.S.countdown = 0); await page.click('#play');
     await page.waitForFunction(() => __stillpoint.R.state === 'playing'); await page.tap('#stage');
     await page.waitForFunction(() => __stillpoint.R.state === 'paused');
     const rsvpPosition = await page.evaluate(() => __stillpoint.R.pos);
-    await page.click('#r-book'); await page.waitForSelector('.book-viewport');
+    await chooseMode('read'); await page.waitForSelector('.book-viewport');
     check('returning from RSVP keeps its latest position', await page.evaluate(pos => __stillpoint.R.pos === pos, rsvpPosition));
     await page.setViewportSize({ width: 430, height: 800 }); await page.waitForTimeout(350);
     check('viewport resizing preserves the reading anchor', await page.evaluate(pos => {

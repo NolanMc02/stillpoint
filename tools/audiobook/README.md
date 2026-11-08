@@ -16,7 +16,7 @@ Closing the browser window does not stop the engine. Use **Close local engine** 
 
 Studio currently exposes Kokoro English voices. It automatically selects CUDA when available, otherwise CPU. The M1 Mac workflow has been exercised with real generation; the Windows launcher and CUDA path need testing on the actual PC. Qwen remains CLI-only and experimental. Studio binds to loopback, requires same-origin authenticated writes, and does not send book text to a cloud speech API. It is not a hosted generation service: the public GitHub Pages site runs the reader, while Studio needs the local Python engine.
 
-The reader's book icon opens the traditional Book view. **Aa → Layout** selects Pages or Continuous scroll. Font, size, boldness, spacing, margins, alignment, themes, page dimming, and progress display are configurable. Page counts refer to the current reflowed section, not a publisher's print edition. These are Kindle-style core reading controls; Amazon store/sync, dictionary, translation, and X-Ray integrations are not implemented. Highlights and notes remain disabled.
+The reader's labeled mode button selects Read, Listen, or RSVP; switching preserves your place and stays paused. **Aa → Layout** selects Pages or Continuous scroll. Font, size, boldness, spacing, margins, alignment, themes, page dimming, and progress display are configurable. Page counts refer to the current reflowed section, not a publisher's print edition. These are Kindle-style core reading controls; Amazon store/sync, dictionary, translation, and X-Ray integrations are not implemented. Highlights and notes remain disabled.
 
 ## Try the reader
 
@@ -26,9 +26,9 @@ Serve the repository over localhost; opening `index.html` as a file will not wor
 python3 -m http.server 8123 --bind 127.0.0.1
 ```
 
-Open `http://localhost:8123`. Import an EPUB and finish **Review reading text**. From the book's menu or the speaker button in the reader, open **Audiobook → Export narration job**. Transfer that JSON file to the generation computer.
+Open `http://localhost:8123`. Import an EPUB and finish **Review reading text**. From the book's library menu choose **Audiobook → Export narration job**, or use the reader's mode button → Manage audiobook → Export narration job. Transfer that JSON file to the generation computer.
 
-After generation, open the same book and choose **Audiobook → Import audiobook**. Select the generated ZIP. Choose **Book · pages or scrolling** with **Listen along in book mode**, **Listen and follow text**, **Listen and follow RSVP**, or **Read without narration**. Press play in the reader. In narration modes the speed controls adjust audio playback speed; the settings sheet also offers exact rates.
+After generation, open the same book and choose the reading-mode button → **Manage audiobook → Import audiobook**. Select the generated ZIP. Choose Read, Listen (with optional text following), or RSVP (with optional audiobook voice and timing). Mode changes stay paused until Play. Listen offers 15-second skips, playback speed, chapter/book time remaining, and a sleep timer with a duration or end-of-chapter stop.
 
 The existing word menu's **Read from here**, chapter navigation, search, bookmarks, rewind, and position slider use the shared reading position. Narration follows those jumps. Normal RSVP keeps its independent WPM pacing when narration is off.
 

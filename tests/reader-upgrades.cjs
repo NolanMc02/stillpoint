@@ -70,8 +70,9 @@ function tone(seconds) {
     await page.click('#book-add'); await page.waitForSelector('#reader');
     await page.click('#r-back'); await page.waitForSelector('.book-cover img');
     await page.waitForFunction(() => document.querySelector('.book-cover img').naturalWidth > 0);
-    check('library shows locally stored cover artwork', await page.locator('.book-cover img').count() === 1); await shot('library-covers');
+    check('library shows locally stored cover artwork', await page.locator('.book-row .book-cover img').count() === 1); await shot('library-covers');
     await page.click('.book-title'); await page.waitForSelector('#reader');
+    await page.click('#r-mode'); await page.click('[data-mode="rsvp"]'); await page.click('[data-close]');
     await page.click('#r-settings'); await page.waitForSelector('#set-body');
     check('settings has five clear groups', await page.locator('.set-nav').count() === 5); await shot('settings');
     await page.click('[data-page="RSVP"]');
@@ -98,7 +99,7 @@ function tone(seconds) {
     const zip = new JSZip(), durationMs = words.length * 35 + 200;
     zip.file('audio/clip-00000.wav', tone(durationMs / 1000));
     zip.file('audiobook.json', JSON.stringify({ format: 'stillpoint-audiobook', version: 1, tokenizer: job.tokenizer, textHash: job.textHash, playback: 'continuous', clips: [{ file: 'audio/clip-00000.wav', durationMs, words: words.map((w, i) => ({ ...w, startMs: i * 35, endMs: (i + 1) * 35 })) }] }));
-    await page.click('#r-audio'); await page.setInputFiles('#narration-import', { name: 'audio.zip', mimeType: 'application/zip', buffer: await zip.generateAsync({ type: 'nodebuffer' }) });
+    await page.click('#r-mode'); await page.click('#mode-audiobook'); await page.setInputFiles('#narration-import', { name: 'audio.zip', mimeType: 'application/zip', buffer: await zip.generateAsync({ type: 'nodebuffer' }) });
     await page.waitForFunction(() => !!__stillpoint.R.narration && !document.querySelector('#narration-import'));
     await page.waitForFunction(() => !document.documentElement.dataset.nav);
     await page.waitForTimeout(300);
@@ -110,18 +111,8 @@ function tone(seconds) {
     await page.evaluate(() => window.__setHidden(false));
     await page.click('#play'); await page.waitForTimeout(100);
     check('Pause stops reading-only background sound', await page.evaluate(async () => __stillpoint.R.narration.audio.paused && (await import('/js/sounds.js')).soundState().playing === 'off'));
-    await page.click('#play');
-    const flowMotion = await page.evaluate(async () => {
-      const viewport = document.querySelector('#flow'), samples = [viewport.scrollTop], started = performance.now();
-      await new Promise(resolve => {
-        const frame = () => { samples.push(viewport.scrollTop); if (performance.now() - started > 6000) resolve(); else requestAnimationFrame(frame); }; frame();
-      });
-      return { delta: Math.max(...samples.slice(1).map((n, i) => Math.abs(n - samples[i]))), range: Math.max(...samples) - Math.min(...samples), state: __stillpoint.R.state };
-    });
-    check('original listen-and-follow view also avoids line-by-line jumps', flowMotion.range > 40 && flowMotion.delta < 50 && flowMotion.state === 'playing');
-    await page.click('#play');
     await page.evaluate(() => { __stillpoint.R.book.bookLayout = 'scroll'; __stillpoint.R.pos = 0; });
-    await page.click('#r-book'); await page.waitForSelector('.book-viewport');
+    await page.click('#r-mode'); await page.click('[data-mode="listen"]'); await page.click('[data-close]'); await page.waitForSelector('.book-viewport');
     await page.click('#play');
     const motion = await page.evaluate(async () => {
       const viewport = document.querySelector('.book-viewport'), samples = [viewport.scrollTop], started = performance.now();

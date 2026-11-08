@@ -18,7 +18,7 @@ Choose an EPUB → review text/chapters → preview a voice → Generate audiobo
 
 Pause stops after the current passage. Resume verifies and reuses completed passage audio. Closing the browser does not stop the engine. Use Close local engine when finished. Keep the PC awake while generating.
 
-When ready, download the ZIP and transfer it to your iPhone with your preferred file-transfer method. In Stillpoint, choose Add a book → Choose files to import the book and audio together. If the matching book already exists on the phone, its speaker menu → Import audiobook can attach the audio to that book when the reviewed text matches exactly.
+When ready, download the ZIP and transfer it to your iPhone with your preferred file-transfer method. In Stillpoint, choose Add a book → Choose files to import the book and audio together. If the matching book already exists on the phone, its reading-mode button → Manage audiobook → Import audiobook can attach the audio to that book when the reviewed text matches exactly.
 
 ## Verification status
 

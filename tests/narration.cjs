@@ -116,7 +116,7 @@ async function packageFor(job) {
     await page.reload();
     await page.click('.book-title');
     await page.waitForSelector('#reader');
-    await page.click('#r-audio');
+    await page.click('#r-mode'); await page.click('#mode-audiobook');
     const download = page.waitForEvent('download');
     await page.click('#narration-export');
     const exported = JSON.parse(fs.readFileSync(await (await download).path(), 'utf8'));
@@ -124,6 +124,8 @@ async function packageFor(job) {
     await page.setInputFiles('#narration-import', { name: 'audiobook.zip', mimeType: 'application/zip', buffer: bytes });
     await page.waitForFunction(() => !!window.__stillpoint.R?.narration);
     check('import attaches audio to the existing book', await page.evaluate(() => __stillpoint.R.book.audioMode === 'page'));
+    await page.evaluate(async () => { const db = await import('/js/db.js'), book = __stillpoint.R.book; delete book.readerMode; book.readingView = 'rsvp'; await db.put('books', book); });
+    await page.click('#r-back'); await page.waitForSelector('.book-title'); await page.click('.book-title'); await page.waitForSelector('#flow-inner .w.cur');
     check('imported media has an audio MIME type on its playback URL', await page.evaluate(() => {
       const player = __stillpoint.R.narration;
       const blob = __audioBlobs.get(player.audio.src);
@@ -180,11 +182,9 @@ async function packageFor(job) {
       return !word.dispatchEvent(new Event('selectstart', { bubbles: true, cancelable: true }))
         && !word.dispatchEvent(new Event('contextmenu', { bubbles: true, cancelable: true }));
     }));
-    await page.click('#r-audio');
-    await page.selectOption('#narration-mode', 'rsvp');
-    check('reading mode is the first control in the audiobook menu', await page.evaluate(() =>
-      document.querySelector('#narration-mode').closest('.sheet-body').firstElementChild.contains(document.querySelector('#narration-mode'))));
-    await page.selectOption('#narration-rate', '1.5');
+    await page.click('#r-mode'); await page.click('[data-mode="rsvp"]'); await page.check('#rsvp-audio');
+    check('one reading-mode selector is the first control', await page.evaluate(() => document.querySelector('#mode-body').firstElementChild.classList.contains('mode-choices')));
+    await page.click('[data-close]'); await page.click('#audio-speed'); await page.selectOption('#audio-rate', '1.5');
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'audiobook-controls.png') });
     await page.click('[data-close]');
     await page.locator('#flow-inner .w.cur').tap();
@@ -195,8 +195,8 @@ async function packageFor(job) {
     check('RSVP follows the current audio word at the selected playback rate', await page.evaluate(() =>
       __stillpoint.R.narration.audio.playbackRate === 1.5
       && (document.querySelector('#w-left').textContent + document.querySelector('#w-pivot').textContent + document.querySelector('#w-right').textContent) === __stillpoint.R.words[__stillpoint.R.pos]));
-    // Jump with the keyboard while audio is playing. It must seek the media too.
-    await page.keyboard.press('ArrowRight');
+    // A system media jump must seek the media and shared word position.
+    await page.evaluate(time => __mediaActions.seekto({ seekTime: time }), manifest.clips.length > 1 ? manifest.clips[0].durationMs / 1000 + .1 : 7);
     await page.waitForFunction(() => __stillpoint.R.narration.audio.currentTime > 0.5);
     check('reading-position jumps seek the audio', await page.evaluate(() => __stillpoint.R.narration.pos === __stillpoint.R.pos));
     if (manifest.clips.length > 1) {
@@ -210,8 +210,7 @@ async function packageFor(job) {
     // Pause using the public UI after the hidden RSVP controls return via tapping.
     await page.tap('#stage');
     await page.waitForFunction(() => __stillpoint.R.state === 'paused');
-    await page.click('#r-audio');
-    await page.selectOption('#narration-mode', 'off');
+    await page.click('#r-mode'); await page.uncheck('#rsvp-audio');
     await page.click('[data-close]');
     await page.locator('#flow-inner .w.cur').tap();
     await page.waitForTimeout(200);
@@ -247,7 +246,7 @@ async function packageFor(job) {
     }));
     // Broken replacement must leave all previous audio intact.
     zip.remove(manifest.clips[0].file);
-    await page.click('#r-audio');
+    await page.click('#r-mode'); await page.click('#mode-audiobook');
     await page.setInputFiles('#narration-import', { name: 'broken.zip', mimeType: 'application/zip', buffer: await zip.generateAsync({ type: 'nodebuffer' }) });
     await page.waitForFunction(() => document.querySelector('#narration-status').textContent.includes('missing'));
     check('failed replacement preserves saved narration', await page.evaluate(async file => {
@@ -276,7 +275,7 @@ async function packageFor(job) {
     await page.reload();
     await page.waitForSelector('#reader');
     check('text edits disable stale audio alignment', await page.evaluate(() => !__stillpoint.R.narration && !!__stillpoint.R.narrationError));
-    await page.click('#r-audio');
+    await page.click('#r-mode'); await page.click('#mode-audiobook');
     check('text mismatch has a recovery explanation', /Export a new narration job/.test(await page.textContent('#narration-status')));
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'audiobook-settings.png') });
     await page.evaluate(async () => { const db = await import('/js/db.js'); await db.deleteBook('narration-test'); });

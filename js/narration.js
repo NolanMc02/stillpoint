@@ -1,6 +1,7 @@
 // Versioned interchange shared with tools/audiobook. Timings refer to the saved audio timeline.
 import { tokenize } from './engine.js';
 import { openAudiobookZip } from './audiobook-zip.js';
+import { audioTimeAtWord } from './reading-state.js';
 
 export const TOKENIZER = 'stillpoint-v1';
 export const canonicalText = blocks => JSON.stringify(blocks.map(b => [b.sid, b.tokens.map(t => [t.w, t.g])]));
@@ -92,7 +93,9 @@ export class NarrationPlayer {
     for (const clip of manifest.clips) { this.starts.push(count); count += clip.words.length; }
     this.audio.ontimeupdate = () => this.update();
     this.audio.onended = () => this.next();
-    this.audio.onerror = () => this.error(new Error('The audio could not be played. Try importing the audiobook again.'));
+    this.audio.onerror = () => this.error(new Error(this.audio.error?.code === 4
+      ? 'This audio format could not be opened. Reload the saved audio; if it still fails, import the original Studio ZIP again.'
+      : 'Audio playback was interrupted. Your reading place is saved. Reload the audio and press Play.'));
     this.audio.onpause = () => {
       // Ignore our own pause/load operations and stale events after a new play.
       if (!this.playing || !this.audio.paused || this.audio.ended) return;
@@ -137,8 +140,10 @@ export class NarrationPlayer {
     this.audio.src = this.url;
     this.clipIndex = word.clipIndex;
     this.audio.load();
+    this.audio.currentTime = word.startMs / 1000;
+    this.pos = pos;
   }
-  async playAt(pos, { paused = false, resume = true } = {}) {
+  async playAt(pos, { paused = false, resume = true, timeSeconds } = {}) {
     const revision = ++this.revision;
     const samePosition = resume && pos === this.pos && this.clipIndex >= 0;
     const resumeTime = this.audio.currentTime;
@@ -158,12 +163,14 @@ export class NarrationPlayer {
       this.clipIndex = word.clipIndex;
     }
     this.audio.playbackRate = this.rate;
-    this.audio.currentTime = samePosition ? resumeTime : word.startMs / 1000;
+    const clipOffset = this.manifest.clips.slice(0, word.clipIndex).reduce((sum, clip) => sum + clip.durationMs / 1000, 0);
+    this.audio.currentTime = Number.isFinite(timeSeconds) ? Math.max(0, timeSeconds - clipOffset) : samePosition ? resumeTime : word.startMs / 1000;
     this.pos = pos;
     this.callbacks.onWord?.(pos);
     this.updateMediaPosition();
     if (paused) { this.updateMediaState('paused'); return true; }
-    await this.audio.play();
+    try { await this.audio.play(); }
+    catch (error) { if (revision !== this.revision) return false; throw error; }
     if (revision !== this.revision) return false;
     this.playing = true;
     this.updateMediaState('playing');
@@ -178,6 +185,25 @@ export class NarrationPlayer {
   }
   pause() { this.revision++; this.playing = false; this.audio.pause(); cancelAnimationFrame(this.raf); this.updateMediaState('paused'); }
   setRate(rate) { this.rate = rate; this.audio.playbackRate = rate; this.updateMediaPosition(); }
+  durationSeconds() { return this.manifest.clips.reduce((sum, clip) => sum + clip.durationMs / 1000, 0); }
+  timeAtWord(pos) { return audioTimeAtWord(this.manifest, pos); }
+  wordAtSeconds(seconds) {
+    let offset = 0;
+    for (let c = 0; c < this.manifest.clips.length; c++) {
+      const clip = this.manifest.clips[c];
+      if (seconds < offset + clip.durationMs / 1000) {
+        let low = 0, high = clip.words.length;
+        while (low < high) { const mid = (low + high) >>> 1; if (clip.words[mid].startMs / 1000 <= seconds - offset) low = mid + 1; else high = mid; }
+        return this.starts[c] + Math.max(0, low - 1);
+      }
+      offset += clip.durationMs / 1000;
+    }
+    return this.words.length - 1;
+  }
+  seekSeconds(seconds, { paused = this.audio.paused } = {}) {
+    seconds = Math.max(0, Math.min(this.durationSeconds(), seconds));
+    return this.playAt(this.wordAtSeconds(seconds), { paused, resume: false, timeSeconds: seconds });
+  }
   setBackground(hidden) {
     this.background = hidden;
     if (hidden) cancelAnimationFrame(this.raf);
@@ -191,6 +217,7 @@ export class NarrationPlayer {
     const session = navigator.mediaSession;
     if (typeof MediaMetadata !== 'undefined') session.metadata = new MediaMetadata({ title: book.title, artist: book.author || '', album: 'Stillpoint' });
     const seek = seconds => {
+      if (actions.seekSeconds) { actions.seekSeconds(seconds); return; }
       let offset = 0;
       let pos = this.words.length - 1;
       for (let c = 0; c < this.manifest.clips.length; c++) {

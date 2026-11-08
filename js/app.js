@@ -1,6 +1,8 @@
 import * as db from './db.js';
 import { refreshInstalledApp } from './updates.js';
 import { BookReader } from './book-reader.js';
+import { MODE_LABELS, savedMode, selectMode, summarizeAudio } from './reading-state.js';
+import { SleepTimer } from './sleep-timer.js';
 import { FollowScroll } from './follow-scroll.js';
 import { makeCover, validCover } from './covers.js';
 import { openAudiobookZip } from './audiobook-zip.js';
@@ -313,6 +315,13 @@ async function showLibrary(direction = 'back') {
   await db.put('kv', null, 'lastBook').catch(() => {});
   document.title = 'Stillpoint';
   const books = await db.getAll('books');
+  // Backfill lightweight metadata once for older imports, one manifest at a time.
+  for (const book of books) if (book.audioReady === undefined) {
+    const record = await db.get('narrations', book.id);
+    try { if (record) summarizeAudio(book, record.manifest); else book.audioReady = false; }
+    catch { book.audioReady = false; }
+    await db.put('books', book);
+  }
   navigate(direction, () => renderLibrary(books));
 }
 
@@ -340,7 +349,16 @@ function renderLibrary(books) {
     $('#empty-add').onclick = showAdd;
     return;
   }
-  body.innerHTML = `${installNote}<div class="lib-tools">
+  const recent = books.filter(book => !book.finishedAt && book.pos < book.wordCount - 1)
+    .sort((a, b) => (b.lastReadAt || b.addedAt) - (a.lastReadAt || a.addedAt))[0];
+  const resumeLabel = book => savedMode(book) === 'listen' ? book.audioReady ? 'Continue listening' : 'Open book' : savedMode(book) === 'rsvp' ? 'Continue RSVP' : 'Continue reading';
+  const remaining = (book, label = true) => {
+    if (savedMode(book) === 'listen' && !book.audioReady) return 'Audio unavailable — open to recover';
+    const audio = book.audioReady && (savedMode(book) === 'listen' || (savedMode(book) === 'rsvp' && (book.rsvpAudio || book.audioMode === 'rsvp')));
+    const time = audio ? audioClock(book.audioRemainingMs / 1000 / (book.audioRate || 1)) : formatDuration(estimateMs(book.wordCount - book.pos, book.wpm || S.wpm, S.smartPacing));
+    return `${label ? audio ? 'Audio · ' : 'Reading · ' : ''}${time} left`;
+  };
+  body.innerHTML = `${installNote}${recent ? `<button class="continue-card" data-open="${esc(recent.id)}"><span class="book-cover" aria-hidden="true">${validCover(recent.cover) ? `<img src="${recent.cover}" alt="">` : icon('book')}</span><span><small>${resumeLabel(recent)}</small><b>${esc(recent.title)}</b><span>${esc(recent.currentChapterTitle || recent.chapters?.[0]?.title || 'Your saved place')}</span><span>${esc(remaining(recent, false))}</span></span><span aria-hidden="true">→</span></button>` : ''}<div class="lib-tools">
       <input id="lib-search" type="search" placeholder="Search your library" aria-label="Search your library" value="${esc(libQuery)}">
       <select id="lib-sort" aria-label="Sort books">
         <option value="recent">Recent</option><option value="title">Title</option><option value="progress">Progress</option>
@@ -356,13 +374,13 @@ function renderLibrary(books) {
     $('#lib-list').innerHTML = list.length ? list.map(b => {
       const done = b.finishedAt || b.pos >= b.wordCount - 1;
       const p = Math.round(progress(b) * 100);
-      const wpm = b.wpm || S.wpm;
-      const left = done ? 'Finished' : `${formatDuration(estimateMs(b.wordCount - b.pos, wpm, S.smartPacing))} left`;
+      const left = done ? 'Finished' : remaining(b);
       return `<article class="book-row">
         <button class="book-open" data-open="${esc(b.id)}">
           <span class="book-cover" aria-hidden="true">${validCover(b.cover) ? `<img src="${b.cover}" alt="" loading="lazy">` : `<span>${esc(String(b.title || 'Untitled').slice(0, 1))}</span>`}</span><span class="book-details">
           <h2 class="book-title">${esc(b.title)}</h2>
           ${b.author ? `<div class="book-author">${esc(cleanAuthor(b.author))}</div>` : ''}
+          <div class="book-badges"><span>${b.audioReady ? 'Audio available' : savedMode(b) === 'listen' ? 'Audio unavailable' : 'Text only'}</span><span>${MODE_LABELS[savedMode(b)]}</span></div>
           <div class="book-progress"><i style="width:${done ? 100 : p}%"></i></div>
           <div class="book-meta"><span>${done ? 100 : p}%</span><span>${left}</span></div>
           </span>
@@ -476,7 +494,7 @@ async function storeBook(parsed) {
   const book = {
     id, title: parsed.title || 'Untitled', author: cleanAuthor(parsed.author), format: parsed.format,
     addedAt: now, lastReadAt: 0, wordCount: words.length, pos: 0, finishedAt: null, wpm: null,
-    chapters: parsed.chapters || [], bookmarks: [], hasCleanup: !!parsed.cleanup, cover: validCover(parsed.cover),
+    readerMode: 'read', readingView: 'book', audioMode: 'off', chapters: parsed.chapters || [], bookmarks: [], hasCleanup: !!parsed.cleanup, cover: validCover(parsed.cover),
   };
   await db.saveBook(book, { id, blocks, ...(parsed.cleanup ? { cleanup: parsed.cleanup } : {}) });
   return id;
@@ -486,7 +504,7 @@ async function importGeneratedPackage(file, onProgress = () => {}) {
   onProgress('Reading the ZIP directory…');
   const zip = await openAudiobookZip(file);
   if (!zip.has('reading-book.json')) {
-    if (zip.has('audiobook.json')) throw new ImportError('This ZIP contains audio and timings, but no book text. Open the matching book’s speaker menu → Import audiobook, or download the combined book ZIP from Studio.');
+    if (zip.has('audiobook.json')) throw new ImportError('This ZIP contains audio and timings, but no book text. Open the matching book → reading mode → Manage audiobook → Import audiobook, or download the combined book ZIP from Studio.');
     return null;
   }
   onProgress('Reading the included book text…');
@@ -499,7 +517,7 @@ async function importGeneratedPackage(file, onProgress = () => {}) {
   const book = { id, title: String(payload.book?.title || 'Untitled'), author: cleanAuthor(payload.book?.author || ''),
     format: 'epub', addedAt: now, lastReadAt: 0, wordCount: buildIndex(blocks).words.length, pos: 0,
     finishedAt: null, wpm: null, chapters, bookmarks: [], hasCleanup: !!payload.content.cleanup,
-    readingView: 'book', bookLayout: 'pages', audioMode: 'page', audioRate: 1, cover: validCover(payload.book?.cover) };
+    readerMode: 'listen', listenFollow: true, readingView: 'book', bookLayout: 'pages', audioMode: 'page', audioRate: 1, cover: validCover(payload.book?.cover) };
   const content = { id, blocks, ...(payload.content.cleanup ? { cleanup: payload.content.cleanup } : {}) };
   await db.put('kv', { name: file.name, bookId: id, startedAt: Date.now() }, 'pendingAudiobookImport');
   onProgress('Checking that the book and narration match…');
@@ -708,15 +726,107 @@ function reviewPdf(extracted, fileName) {
 
 /* ---------- Audiobooks ---------- */
 function narrating() { return !!R?.narration && ['page', 'rsvp'].includes(R.book.audioMode); }
-function bookMode() { return R?.book.readingView === 'book'; }
+function readerMode() { return R ? savedMode(R.book) : 'read'; }
+function bookMode() { return R?.book.readingView === 'book' && !(readerMode() === 'listen' && R.book.listenFollow === false); }
+function listenOnly() { return readerMode() === 'listen' && R.book.listenFollow === false; }
 
-async function setReadingView(view) {
-  if (!R) return;
+async function setReaderMode(mode) {
+  if (!R || (mode === 'listen' && !R.narration)) return;
   pause({ animate: false });
-  R.book.readingView = view;
-  if (view === 'book' && R.book.audioMode === 'rsvp') R.book.audioMode = 'page';
+  R.book.rsvpAudio ??= R.book.audioMode === 'rsvp';
+  selectMode(R.book, mode);
+  if (!narrating()) { R.sleepTimer?.clear(); R.narration?.releaseMediaSession(); }
   await saveProgress(true);
   renderReader();
+}
+
+function showReaderModes() {
+  const sheet = openSheet('Reading mode', '<div class="sheet-body" id="mode-body"></div>');
+  const draw = () => {
+    const mode = readerMode(), audio = !!R.narration;
+    $('#mode-body', sheet).innerHTML = `<div class="mode-choices" role="group" aria-label="Reading mode">${Object.entries(MODE_LABELS).map(([key, name]) => `<button data-mode="${key}" aria-pressed="${mode === key}" ${key === 'listen' && !audio ? 'disabled' : ''}>${name}</button>`).join('')}</div>
+      <p class="settings-intro">${mode === 'read' ? 'Read at your own pace with pages or scrolling.' : mode === 'listen' ? 'Listen to your audiobook, with or without text following.' : 'Press Play to start words arriving at your focus point.'} Switching modes keeps your place and pauses playback.</p>
+      ${mode === 'read' ? `<div class="book-layout-choices"><button data-mode-layout="pages" aria-pressed="${(R.book.bookLayout || 'pages') === 'pages'}">Pages</button><button data-mode-layout="scroll" aria-pressed="${R.book.bookLayout === 'scroll'}">Continuous scroll</button></div>` : ''}
+      ${mode === 'listen' ? `<label class="book-check"><input id="listen-follow" type="checkbox" ${R.book.listenFollow !== false ? 'checked' : ''}>Follow along with text</label>` : ''}
+      ${mode === 'rsvp' ? `<label class="book-check"><input id="rsvp-audio" type="checkbox" ${R.book.rsvpAudio ? 'checked' : ''} ${audio ? '' : 'disabled'}>Use audiobook voice and timing</label><button class="menu-btn" id="rsvp-options">RSVP appearance and surrounding words</button>` : ''}
+      ${!audio ? '<p class="muted">Add an audiobook to enable Listen and narrated RSVP.</p>' : ''}
+      <button class="menu-btn" id="mode-audiobook">${audio ? 'Manage audiobook' : 'Add audiobook'}<small>Import narration or check saved audio</small></button>`;
+    $('#mode-audiobook', sheet).onclick = () => showNarration(R.book).catch(error => toast(error.message));
+    $('#rsvp-options', sheet)?.addEventListener('click', () => showSettings('RSVP'));
+    for (const id of ['listen-follow', 'rsvp-audio']) $(`#${id}`, sheet)?.addEventListener('change', async event => {
+      if (id === 'listen-follow') R.book.listenFollow = event.target.checked;
+      else R.book.rsvpAudio = event.target.checked;
+      await setReaderMode(mode); draw();
+    });
+  };
+  sheet.addEventListener('click', async event => {
+    const mode = event.target.closest('[data-mode]');
+    if (mode) { await setReaderMode(mode.dataset.mode); draw(); }
+    const layout = event.target.closest('[data-mode-layout]');
+    if (layout) { R.book.bookLayout = layout.dataset.modeLayout; await setReaderMode('read'); draw(); }
+  });
+  draw();
+}
+
+function audioClock(seconds) {
+  seconds = Math.max(0, Math.ceil(seconds || 0));
+  const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
+  return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` : `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+}
+function chapterEndSeconds() {
+  const next = R.chapterStarts.find(pos => pos > R.pos);
+  return next === undefined ? R.narration.durationSeconds() : R.narration.timeAtWord(next);
+}
+function updateListeningControls() {
+  if (!R?.narration) return;
+  const timer = R.sleepTimer?.state();
+  if ($('#audio-speed')) $('#audio-speed').textContent = `${R.book.audioRate || 1}×`;
+  if ($('#audio-sleep')) $('#audio-sleep').textContent = timer?.kind === 'duration' ? `Sleep ${audioClock(timer.remainingMs / 1000)}` : timer?.kind === 'chapter' ? 'Sleep · chapter' : 'Sleep';
+  if ($('#audio-times')) {
+    const position = R.narration.positionSeconds(), rate = R.book.audioRate || 1;
+    $('#audio-times').textContent = `${audioClock(Math.max(0, chapterEndSeconds() - position) / rate)} in chapter · ${audioClock(Math.max(0, R.narration.durationSeconds() - position) / rate)} in book`;
+  }
+}
+function showListeningOptions() {
+  if (!R?.narration) return;
+  const sheet = openSheet('Listening controls', `<div class="sheet-body stack">
+    <label for="audio-rate">Playback speed</label><select class="field-text" id="audio-rate">${[.5,.75,1,1.25,1.5,1.75,2].map(rate => `<option value="${rate}">${rate}×</option>`).join('')}</select>
+    <label for="sleep-choice">Sleep timer</label><select class="field-text" id="sleep-choice"><option value="off">Off</option>${[5,10,15,30,45,60].map(minutes => `<option value="${minutes}">${minutes} minutes from now</option>`).join('')}<option value="chapter">End of this chapter</option></select>
+    <p class="muted" id="sleep-status"></p><button class="menu-btn" id="audio-background">Background sound</button></div>`);
+  const rate = $('#audio-rate', sheet), timer = R.sleepTimer.state();
+  if (![...rate.options].some(option => Number(option.value) === (R.book.audioRate || 1))) rate.add(new Option(`${R.book.audioRate}×`, R.book.audioRate));
+  rate.value = R.book.audioRate || 1;
+  $('#sleep-choice', sheet).value = timer.kind === 'chapter' ? 'chapter' : timer.kind === 'duration' ? String(timer.minutes) : 'off';
+  $('#sleep-status', sheet).textContent = timer.kind === 'duration' ? `Stops in ${audioClock(timer.remainingMs / 1000)}. Choose Off to cancel.` : timer.kind === 'chapter' ? 'Stops at the end of the current chapter.' : 'Stops narration and background sound when the timer finishes.';
+  rate.onchange = () => { R.book.audioRate = Number(rate.value); R.narration.setRate(R.book.audioRate); saveProgress(true); updateListeningControls(); updateMeta(); };
+  $('#sleep-choice', sheet).onchange = event => {
+    const value = event.target.value;
+    if (value === 'off') R.sleepTimer.clear();
+    else if (value === 'chapter') R.sleepTimer.chapter(chapterEndSeconds());
+    else R.sleepTimer.duration(Number(value));
+    $('#sleep-status', sheet).textContent = value === 'off' ? 'Sleep timer is off.' : value === 'chapter' ? 'Stops at the end of this chapter.' : `Stops in ${value} minutes, including time spent paused.`;
+    updateListeningControls();
+  };
+  $('#audio-background', sheet).onclick = showSoundSheet;
+}
+async function skipAudio(seconds) {
+  if (!R?.narration || !narrating()) return;
+  const owner = R, paused = owner.state === 'paused';
+  try {
+    await owner.narration.seekSeconds(owner.narration.positionSeconds() + seconds, { paused });
+    if (R !== owner) return;
+    if (paused) showFlowAt(owner.pos, true);
+    updateMeta(); await saveProgress(true);
+  } catch (error) { if (R === owner) reportPlaybackError(error); }
+}
+function reportPlaybackError(error) {
+  if (!R) return;
+  pause({ animate: false });
+  R.playbackError = error.name === 'NotAllowedError' ? 'Audio needs a tap to start. Press Play again; your place is saved.'
+    : error.name === 'NotSupportedError' ? 'The saved audio could not be opened. Reload it, or import the original Studio ZIP again.'
+    : error.message || 'Audio could not start. Your place is saved.';
+  const banner = $('#playback-error');
+  if (banner) { banner.hidden = false; $('#playback-error-message').textContent = R.playbackError; }
 }
 
 function showBookAppearance() {
@@ -769,7 +879,10 @@ function showBookAppearance() {
 async function attachNarration() {
   const owner = R;
   const record = await db.get('narrations', owner.book.id);
-  if (!record || R !== owner) return;
+  if (!record || R !== owner) {
+    if (!record) { owner.book.audioReady = false; owner.book.rsvpAudio = false; if (savedMode(owner.book) === 'listen') owner.narrationError = 'The saved audiobook is missing. Import its original ZIP, or choose Read instead.'; }
+    return;
+  }
   try {
     validateManifest(record.manifest, await createNarrationJob(owner.book, { blocks: owner.blocks }));
     owner.narration = new NarrationPlayer(record.manifest,
@@ -786,28 +899,43 @@ async function attachNarration() {
           }
           saveProgress();
         },
-        onEnd: () => { if (R === owner) finishBook(); },
+        onEnd: () => {
+          if (R !== owner) return;
+          if (owner.sleepTimer?.state().kind !== 'off') stopSound();
+          owner.sleepTimer?.clear(); finishBook();
+        },
         onPause: () => { if (R === owner) pause({ animate: false }); },
         onResume: () => {
           if (R === owner && narrating() && owner.state === 'paused') {
             owner.sessionStart ||= performance.now(); setMode('playing');
           }
         },
-        onError: error => { if (R === owner) { pause({ animate: false }); toast(error.message, 7000); } },
+        onError: error => { if (R === owner) reportPlaybackError(error); },
       });
     owner.narration.setRate(owner.book.audioRate || 1);
     // Fetch the local Blob before the tap so play() stays inside the user's gesture.
     await owner.narration.prepare(owner.pos);
-  } catch (error) { owner.narration?.dispose(); owner.narration = null; owner.narrationError = error.message; }
+    summarizeAudio(owner.book, record.manifest);
+    owner.book.rsvpAudio ??= owner.book.audioMode === 'rsvp';
+    owner.sleepTimer = new SleepTimer(owner.narration.audio, () => owner.narration.positionSeconds(), expired => {
+      if (R !== owner) return;
+      pause({ animate: false }); stopSound();
+      if (expired.kind === 'chapter') owner.narration.seekSeconds(expired.endSeconds, { paused: true }).then(() => { if (R === owner) saveProgress(true); }).catch(error => { if (R === owner) reportPlaybackError(error); });
+      toast('Sleep timer finished. Your place is saved.');
+    }, () => { if (R === owner && !document.hidden) updateListeningControls(); });
+  } catch (error) { owner.narration?.dispose(); owner.narration = null; owner.narrationError = error.message; owner.book.audioReady = false; owner.book.rsvpAudio = false; }
 }
 
 function applyNarrationMode() {
   if (!R || !$('#reader')) return;
   const active = narrating();
   $('#reader').classList.toggle('book-reading', bookMode());
-  $('#r-book')?.setAttribute('aria-pressed', bookMode());
+  $('#reader').classList.toggle('listen-only', listenOnly());
+  $('#reader').classList.toggle('has-audio', active);
+  $('#reader').classList.toggle('read-mode', readerMode() === 'read');
+  $('#r-mode').textContent = `${MODE_LABELS[readerMode()]} ▾`;
   $('#reader').classList.toggle('audio-page', active && R.book.audioMode === 'page');
-  $('#r-audio').setAttribute('aria-pressed', active);
+  $('#audio-toolbar').hidden = !active;
   if (active) {
     $('#wpm-v').textContent = `${(R.book.audioRate || 1).toFixed(1)}×`;
     $('#wpm-box small').textContent = 'Audio';
@@ -817,13 +945,19 @@ function applyNarrationMode() {
     $('#wpm-box small').textContent = 'WPM';
     $('#wpm-box').setAttribute('aria-label', 'Choose reading speed');
   }
-  $('#play').setAttribute('aria-label', bookMode() && !active ? 'Start RSVP' : R.state === 'paused' ? 'Play' : 'Pause');
+  $('#play').setAttribute('aria-label', readerMode() === 'read' ? 'Start RSVP' : R.state === 'paused' ? 'Play' : 'Pause');
+  $('#play').disabled = readerMode() === 'listen' && !R.narration;
+  if (readerMode() === 'read') $('#play').textContent = 'Start RSVP';
+  $('#r-rew').hidden = !active;
+  $('#audio-forward').hidden = !active;
+  updateListeningControls();
 }
 
 async function playNarration({ resume = true } = {}) {
   unlockAudio();
   if (S.sound !== 'off') playSound(S.sound, S.volume);
   const owner = R;
+  owner.playbackError = null; if ($('#playback-error')) $('#playback-error').hidden = true;
   const run = ++owner.run;
   clearTimeout(owner.timer);
   if (owner.jump) clearJump();
@@ -835,13 +969,14 @@ async function playNarration({ resume = true } = {}) {
     play: () => { if (R === owner && narrating() && owner.state === 'paused') playNarration(); },
     pause: () => { if (R === owner) pause({ animate: false }); },
     seek: pos => { if (R === owner && narrating()) seek(pos); },
+    seekSeconds: seconds => { if (R === owner && narrating()) skipAudio(seconds - owner.narration.positionSeconds()); },
   });
   try {
     if (!await owner.narration.playAt(owner.pos, { resume }) || R !== owner || run !== owner.run) return;
     owner.sessionStart ||= performance.now();
     setMode('playing');
   } catch (error) {
-    if (R === owner && run === owner.run) { pause({ animate: false }); toast(error.message || 'Audio playback could not start.', 7000); }
+    if (R === owner && run === owner.run) reportPlaybackError(error);
   }
 }
 
@@ -873,15 +1008,7 @@ async function showNarration(book) {
     catch (error) { message = error.message; }
   }
   const sheet = openSheet('Audiobook', `<div class="sheet-body stack">
-    <section class="narration-mode-panel" aria-label="Reading mode">
-      <label for="narration-mode">Reading mode</label>
-      <select class="field-text" id="narration-mode" aria-describedby="narration-mode-help">
-        <option value="off">Read without narration</option><option value="book">Book · pages or scrolling</option>${valid ? '<option value="page">Listen and follow text</option><option value="rsvp">Listen and follow RSVP</option>' : ''}
-      </select>
-      <p id="narration-mode-help">Choose how you want to read or listen.</p>
-    </section>
-    ${valid ? `<label class="book-check" id="book-audio-option" hidden><input id="book-audio-enabled" type="checkbox" ${book.audioMode === 'page' ? 'checked' : ''}>Listen along in book mode</label>
-    <label for="narration-rate">Playback speed</label><select class="field-text" id="narration-rate">${[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(n => `<option value="${n}">${n}×</option>`).join('')}</select>` : ''}
+    <button class="menu-btn" id="manage-reading-mode">Reading mode<small>Choose Read, Listen, or RSVP</small></button>
     <p class="muted" id="narration-status">${esc(message)}</p>
     <button class="menu-btn" id="narration-export">Export narration job<small>Uses your current reading-text choices</small></button>
     <label class="menu-btn" for="narration-import">Import audiobook<small>Choose the generated audiobook ZIP</small></label>
@@ -899,43 +1026,25 @@ async function showNarration(book) {
     try {
       const { manifest, audio } = await readNarrationPackage(file, job);
       await db.saveNarration(book.id, manifest, audio);
-      book.audioMode = 'page'; book.audioRate ||= 1;
+      book.audioRate ||= 1; summarizeAudio(book, manifest); selectMode(book, 'listen');
       await db.put('books', book);
       closeSheet();
       if (R?.book.id === book.id) await openBook(book.id);
+      else await showLibrary();
       toast('Audiobook ready. Press play to listen.');
     } catch (error) { $('#narration-status', sheet).textContent = error.name === 'QuotaExceededError' ? 'There is not enough storage for this audiobook.' : error.message; }
   };
-  {
-    $('#narration-mode', sheet).value = book.readingView === 'book' ? 'book' : valid ? book.audioMode || 'off' : 'off';
-    const rate = $('#narration-rate', sheet), follow = $('#book-audio-enabled', sheet);
-    if (rate) {
-    if (![...rate.options].some(o => Number(o.value) === (book.audioRate || 1))) rate.add(new Option(`${book.audioRate}×`, book.audioRate));
-    rate.value = book.audioRate || 1;
-    }
-    if ($('#book-audio-option', sheet)) $('#book-audio-option', sheet).hidden = book.readingView !== 'book';
-    const update = async () => {
-      const mode = $('#narration-mode', sheet).value;
-      book.readingView = mode === 'book' ? 'book' : 'rsvp';
-      book.audioMode = mode === 'book' ? follow?.checked ? 'page' : 'off' : mode;
-      book.audioRate = rate ? Number(rate.value) : 1;
-      if ($('#book-audio-option', sheet)) $('#book-audio-option', sheet).hidden = mode !== 'book';
-      await db.put('books', book);
-      if (R?.book.id === book.id) {
-        R.book.audioMode = book.audioMode; R.book.audioRate = book.audioRate; R.book.readingView = book.readingView;
-        R.narration?.setRate(book.audioRate);
-        renderReader();
-      }
-    };
-    $('#narration-mode', sheet).onchange = () => update().catch(error => toast(error.message));
-    if (rate) rate.onchange = () => update().catch(error => toast(error.message));
-    if (follow) follow.onchange = () => update().catch(error => toast(error.message));
-  }
+  $('#manage-reading-mode', sheet).onclick = async () => { if (R?.book.id !== book.id) await openBook(book.id); showReaderModes(); };
   if (record) $('#narration-remove', sheet).onclick = async () => {
     try {
       await db.removeNarration(book.id);
-      if (R?.book.id === book.id) { R.narration?.dispose(); R.narration = null; applyNarrationMode(); updateWpm(); updateMeta(); }
+      if (R?.book.id === book.id) {
+        R.narration?.dispose(); R.narration = null; R.sleepTimer?.dispose(); R.sleepTimer = null;
+        Object.assign(R.book, { audioReady: false, rsvpAudio: false, audioDurationMs: 0, audioRemainingMs: 0 });
+        selectMode(R.book, 'read'); await saveProgress(true); renderReader();
+      }
       closeSheet(); toast('Audiobook removed');
+      if (!R) await showLibrary();
     } catch (error) { toast(error.message); }
   };
 }
@@ -946,6 +1055,9 @@ let wakeLock = null;
 const SEG_WINDOW = 7;
 
 async function openBook(id) {
+  if (R) { pause({ animate: false }); if (R.book.id !== id) await saveProgress(true); }
+  R?.sleepTimer?.dispose();
+  R?.chromeResize?.disconnect();
   R?.bookView?.destroy();
   R?.narration?.dispose();
   const [book, content] = await Promise.all([db.get('books', id), db.get('contents', id)]);
@@ -964,6 +1076,7 @@ async function openBook(id) {
   };
   await attachNarration();
   segStartsCache = R.segs.map(s => s.start);
+  book.currentChapterTitle = currentChapter(R.pos)?.title || '';
   book.lastReadAt = Date.now();
   db.put('books', book).catch(() => {});
   db.put('kv', id, 'lastBook').catch(() => {});
@@ -975,12 +1088,15 @@ async function openBook(id) {
 let segStartsCache = [];
 
 function renderReader() {
+  R.chromeResize?.disconnect();
   R.bookView?.destroy(); R.bookView = null;
   R.loaded = [0, -1]; R.animate = S.bookAnimation;
   R.jump = null;
   $('#app').innerHTML = `<div id="reader">
     <div id="flow" tabindex="-1"><div id="flow-inner"></div></div>
     <div id="book-view" hidden></div><div id="book-dimmer" aria-hidden="true"></div>
+    <section id="listen-view" aria-label="Listening" hidden><div class="listen-cover">${validCover(R.book.cover) ? `<img src="${R.book.cover}" alt="">` : icon('book')}</div><h1>${esc(R.book.title)}</h1><p>${esc(R.book.author || '')}</p><p id="listen-chapter"></p></section>
+    <section id="playback-error" role="alert" hidden><p id="playback-error-message"></p><button id="audio-retry">Reload audio</button><button id="audio-recover">Audiobook options</button><button id="audio-read-instead">Read instead</button></section>
     <div id="stage" aria-live="off">
       <div id="rail">
         <div id="chapter-call"></div>
@@ -1006,8 +1122,7 @@ function renderReader() {
     <header class="bar" id="top-bar">
       <button class="icon-btn" id="r-back" aria-label="Back to library">${icon('back')}</button>
       <button id="chapter-btn" aria-label="Open chapters"><b id="c-title"></b><small id="c-book"></small></button>
-      <button class="icon-btn" id="r-book" aria-label="Book reading mode">${icon('book')}</button>
-      <button class="icon-btn" id="r-audio" aria-label="Audiobook">${icon('sound')}</button>
+      <button id="r-mode" aria-label="Choose reading mode" aria-haspopup="dialog">${MODE_LABELS[readerMode()]} ▾</button>
       <button class="icon-btn" id="r-mark" aria-label="Add a bookmark">${icon('mark')}</button>
       <button class="icon-btn" id="r-settings" aria-label="Settings">${icon('gear')}</button>
     </header>
@@ -1016,13 +1131,15 @@ function renderReader() {
       <div id="scrub-wrap"><div id="scrub-track"><div id="scrub-fill"></div></div>
         <input id="scrub" type="range" min="0" max="${Math.max(0, R.words.length - 1)}" step="1" value="${R.pos}" aria-label="Position in book"></div>
       <div id="read-meta"><span id="m-pct"></span><span id="m-left"></span></div>
+      <div id="audio-toolbar" hidden><span id="audio-times"></span><button id="audio-speed" aria-label="Playback speed">1×</button><button id="audio-sleep" aria-label="Sleep timer">Sleep</button></div>
       <div id="controls">
         <div class="side">
           <button class="icon-btn" id="r-toc" aria-label="Chapters, bookmarks, and search">${icon('list')}</button>
-          <button class="icon-btn" id="r-rew" aria-label="Rewind">${icon('back10')}</button>
+          <button class="audio-skip" id="r-rew" aria-label="Back 15 seconds">${icon('back10')}<small>15s</small></button>
         </div>
         <button id="play" aria-label="Play">${icon('play')}</button>
         <div class="side right">
+          <button class="audio-skip" id="audio-forward" aria-label="Forward 15 seconds" hidden>${icon('back10')}<small>15s</small></button>
           <button class="icon-btn" id="w-down" aria-label="Slower">${icon('minus')}</button>
           <button id="wpm-box" aria-label="Choose reading speed" aria-expanded="false" aria-controls="wpm-pop"><b id="wpm-v"></b><small>WPM</small></button>
           <button class="icon-btn" id="w-up" aria-label="Faster">${icon('plus')}</button>
@@ -1041,6 +1158,8 @@ function renderReader() {
   }
   bindReader();
   applyNarrationMode();
+  $('#listen-view').hidden = !listenOnly();
+  if ((readerMode() === 'listen' || (readerMode() === 'rsvp' && R.book.rsvpAudio)) && (R.playbackError || R.narrationError)) { $('#playback-error').hidden = false; $('#playback-error-message').textContent = R.playbackError || R.narrationError; }
   if (bookMode()) {
     $('#book-view').hidden = false; $('#book-navigation').hidden = false;
     $('#r-settings').textContent = 'Aa'; $('#r-settings').setAttribute('aria-label', 'Reading appearance');
@@ -1058,12 +1177,15 @@ function renderReader() {
         if (folio) {
           folio.hidden = S.bookProgress === 'none';
           folio.textContent = S.bookProgress === 'percent' ? `${Math.round(R.pos / Math.max(1, R.words.length - 1) * 100)}%`
-            : S.bookProgress === 'time' ? `${formatDuration(estimateMs(R.words.length - R.pos, R.wpm, S.smartPacing))} left` : info.label;
+            : S.bookProgress === 'time' ? `${formatDuration(narrating() ? R.narration.remainingMs(R.pos) : estimateMs(R.words.length - R.pos, R.wpm, S.smartPacing))} left` : info.label;
         }
       },
     });
     R.bookView.setCurrent(R.pos, narrating());
   }
+  const owner = R, root = $('#reader'), footer = $('#bottom-bar');
+  const fitControls = () => { if (R === owner && root.isConnected) root.style.setProperty('--reader-footer', `${Math.ceil(footer.getBoundingClientRect().height)}px`); };
+  fitControls(); R.chromeResize = new ResizeObserver(fitControls); R.chromeResize.observe(footer);
   updateWpm();
   updateMeta();
   renderWord(R.words[R.pos] || '');
@@ -1257,7 +1379,9 @@ function updateMeta() {
   if (lp) lp.style.width = `${ratio * 100}%`;
   const lt = $('#live-text');
   if (lt) lt.textContent = `${left} left`;
+  updateListeningControls();
   const ch = currentChapter(pos);
+  if ($('#listen-chapter')) $('#listen-chapter').textContent = ch?.title || '';
   const title = $('#c-title');
   if (title) {
     title.textContent = ch ? ch.title : R.book.title;
@@ -1292,7 +1416,7 @@ function updateWpm(showBadge) {
 }
 const wpmPopOpen = () => !!$('#wpm-pop')?.classList.contains('open');
 function toggleWpmPop(open) {
-  if (narrating()) { if (open) showNarration(R.book).catch(error => toast(error.message)); return; }
+  if (narrating()) { if (open) showListeningOptions(); return; }
   const pop = $('#wpm-pop');
   if (!pop) return;
   if (open) {
@@ -1371,7 +1495,8 @@ function flyWord(fromRect, toRect, text, fontCSS, done) {
 }
 function play(options = {}) {
   if (!R || R.state !== 'paused') return;
-  if (bookMode() && !narrating()) { R.book.readingView = 'rsvp'; renderReader(); saveProgress(true); }
+  if ((readerMode() === 'listen' || (readerMode() === 'rsvp' && R.book.rsvpAudio)) && !R.narration) { reportPlaybackError(new Error('Add or reload the audiobook before playing, or choose Read instead.')); return; }
+  if (readerMode() === 'read') { selectMode(R.book, 'rsvp'); renderReader(); saveProgress(true); }
   if (narrating()) { playNarration(); return; }
   toggleWpmPop(false);
   if (R.pos >= R.words.length - 1) R.pos = 0;
@@ -1512,6 +1637,8 @@ function saveProgress(force) {
   if (!force && now - R.lastSave < 2000) return;
   R.lastSave = now;
   R.book.pos = R.pos;
+  R.book.currentChapterTitle = currentChapter(R.pos)?.title || '';
+  if (R.narration) { R.book.audioReady = true; R.book.audioRemainingMs = R.narration.remainingMs(R.pos) * (R.book.audioRate || 1); }
   R.book.lastReadAt = Date.now();
   return db.put('books', R.book).catch(() => {});
 }
@@ -1570,16 +1697,32 @@ function bindReader() {
   const flow = $('#flow');
   flow.addEventListener('scroll', onFlowScroll, { passive: true });
   flow.addEventListener('pointerdown', () => flowFollower.cancel(), { passive: true });
-  $('#r-back').onclick = () => { pause({ animate: false }); saveProgress(true); stopSound(); R.narration?.dispose(); R.bookView?.destroy(); R = null; showLibrary(); };
+  $('#r-back').onclick = async () => { pause({ animate: false }); await saveProgress(true); stopSound(); R.sleepTimer?.dispose(); R.chromeResize?.disconnect(); R.narration?.dispose(); R.bookView?.destroy(); R = null; await showLibrary(); };
   $('#chapter-btn').onclick = () => showToc('chapters');
   $('#r-toc').onclick = () => showToc('chapters');
   $('#r-mark').onclick = addBookmark;
-  $('#r-audio').onclick = () => showNarration(R.book).catch(error => toast(error.message));
+  $('#r-mode').onclick = showReaderModes;
   $('#r-settings').onclick = () => bookMode() ? showBookAppearance() : showSettings();
-  $('#r-book').onclick = () => setReadingView(bookMode() ? 'rsvp' : 'book');
+  $('#audio-speed').onclick = showListeningOptions;
+  $('#audio-sleep').onclick = showListeningOptions;
+  $('#audio-forward').onclick = () => skipAudio(15);
+  $('#audio-recover').onclick = () => showNarration(R.book).catch(error => toast(error.message));
+  $('#audio-read-instead').onclick = () => setReaderMode('read');
+  $('#audio-retry').onclick = async () => {
+    const owner = R;
+    try {
+      pause({ animate: false });
+      if (!owner.narration) { owner.sleepTimer?.dispose(); await attachNarration(); }
+      else { owner.narration.clipIndex = -1; await owner.narration.prepare(owner.pos); }
+      if (R !== owner) return;
+      if (!owner.narration) throw new Error(owner.narrationError || 'Import the original audiobook ZIP again.');
+      owner.playbackError = null; owner.narrationError = null;
+      $('#playback-error').hidden = true; toast('Audio reloaded. Press Play to listen.'); applyNarrationMode();
+    } catch (error) { if (R === owner) reportPlaybackError(error); }
+  };
   $('#book-prev').onclick = () => R.bookView?.turn(-1);
   $('#book-next').onclick = () => R.bookView?.turn(1);
-  $('#r-rew').onclick = () => rewindBy(S.rewind);
+  $('#r-rew').onclick = () => skipAudio(-15);
   $('#w-up').onclick = () => changeWpm(1);
   $('#w-down').onclick = () => changeWpm(-1);
   $('#r-sound').onclick = showSoundSheet;
@@ -2559,7 +2702,7 @@ document.addEventListener('contextmenu', event => {
 });
 document.addEventListener('keydown', e => {
   if (!R || activeScrim() || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
-  if (bookMode() && R.bookView) {
+  if (bookMode() && R.bookView && !narrating()) {
     if (['ArrowLeft', 'PageUp', 'ArrowRight', 'PageDown'].includes(e.key)) {
       e.preventDefault(); R.bookView.turn(['ArrowLeft', 'PageUp'].includes(e.key) ? -1 : 1); return;
     }
@@ -2569,8 +2712,8 @@ document.addEventListener('keydown', e => {
   if (e.key === ' ') { e.preventDefault(); togglePlay(); }
   if (e.key === 'ArrowUp') { e.preventDefault(); changeWpm(1); }
   if (e.key === 'ArrowDown') { e.preventDefault(); changeWpm(-1); }
-  if (e.key === 'ArrowLeft') rewindBy(S.rewind);
-  if (e.key === 'ArrowRight') seek(R.pos + S.rewind);
+  if (e.key === 'ArrowLeft') { if (narrating()) skipAudio(-15); else rewindBy(S.rewind); }
+  if (e.key === 'ArrowRight') { if (narrating()) skipAudio(15); else seek(R.pos + S.rewind); }
 });
 document.addEventListener('visibilitychange', () => {
   if (!R) return;
