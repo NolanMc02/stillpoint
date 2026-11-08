@@ -185,6 +185,7 @@ function applySettings() {
   root.dataset.livetext = S.liveText ? 'on' : 'off';
   if (luminance(c.bg) > 0.5) root.setAttribute('data-light', ''); else root.removeAttribute('data-light');
   $('meta[name=theme-color]').content = c.bg;
+  R?.fitControls?.();
   if (R) renderWord(R.lastText || R.words[R.pos] || '');
   if (R?.bookView) {
     const owner = R, anchor = R.appearanceAnchor ?? (R.bookView.browsing ? R.bookView.pos : R.pos);
@@ -1281,8 +1282,17 @@ function renderReader() {
   }
   const owner = R, root = $('#reader'), footer = $('#bottom-bar');
   const header = $('#top-bar');
-  const fitControls = () => { if (R === owner && root.isConnected) { root.style.setProperty('--reader-footer', `${Math.ceil(footer.getBoundingClientRect().height)}px`); root.style.setProperty('--reader-header', `${Math.ceil(header.getBoundingClientRect().height)}px`); } };
-  fitControls(); R.chromeResize = new ResizeObserver(fitControls); R.chromeResize.observe(footer); R.chromeResize.observe(header);
+  const fitControls = () => {
+    if (R !== owner || !root.isConnected) return;
+    const frame = root.getBoundingClientRect();
+    // Negative clearance moves the footer below its former layout boundary.
+    // Reserve its actual occupied space, including that position adjustment.
+    root.style.setProperty('--reader-footer', `${Math.ceil(Math.max(0, frame.bottom - footer.getBoundingClientRect().top))}px`);
+    root.style.setProperty('--reader-header', `${Math.ceil(Math.max(0, header.getBoundingClientRect().bottom - frame.top))}px`);
+  };
+  R.fitControls = fitControls;
+  fitControls(); R.chromeResize = new ResizeObserver(fitControls);
+  R.chromeResize.observe(footer); R.chromeResize.observe(header); R.chromeResize.observe(root);
   updateWpm();
   updateMeta();
   renderWord(R.words[R.pos] || '');
@@ -2292,7 +2302,7 @@ function showSettings(startPage = null) {
   };
   const PREVIEW = { Appearance: 'text', RSVP: 'word' };
   const dataPage = () => `
-    <button class="menu-btn" data-a="app-update">Check for app updates<small>Reader 22 · Load the latest reader and keep your place</small></button>
+    <button class="menu-btn" data-a="app-update">Check for app updates<small>Reader 23 · Load the latest reader and keep your place</small></button>
     <button class="menu-btn" data-a="screen-clearance">Screen clearance<small>Adjust the top header and bottom player positions</small></button>
     <button class="menu-btn" data-a="backup">Save a backup<small>Includes your books, progress, bookmarks, stats, and settings</small><small id="last-backup">Save a copy outside this app</small></button>
     <label class="menu-btn" for="restore" style="cursor:pointer">Restore from a backup<small>Preview its contents and choose what to restore</small></label>

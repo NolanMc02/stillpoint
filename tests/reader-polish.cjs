@@ -234,6 +234,16 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     check('negative bottom clearance lowers the actual player without covering its hit target', await page.evaluate(before => { const play = document.querySelector('#play'), r = play.getBoundingClientRect(); return Math.abs(r.bottom - before.bottom - 20) < 1 && document.elementFromPoint(r.x + r.width / 2, r.bottom - 2)?.closest('button') === play && __stillpoint.S.clearanceBottom === -20; }, clearanceBaseline));
     await page.reload(); await page.waitForSelector('.book-viewport');
     check('negative clearance is preserved across reopening', await page.evaluate(() => __stillpoint.S.clearanceBottom === -20 && getComputedStyle(document.documentElement).getPropertyValue('--bottom-clearance') === '-20px'));
+    await page.click('#r-settings'); await page.click('[data-appearance="layout"]'); await page.click('#screen-clearance');
+    await page.locator('#clearanceBottom').fill('-60'); await page.waitForTimeout(200);
+    const loweredLayout = await page.evaluate(() => { const view = document.querySelector('.book-viewport').getBoundingClientRect(), footer = document.querySelector('#bottom-bar').getBoundingClientRect(); return { viewBottom: view.bottom, gap: footer.top - view.bottom, footerHeight: footer.height, pos: __stillpoint.R.pos }; });
+    check('lowered controls give their vacated space back to the text', loweredLayout.gap >= 9 && loweredLayout.gap <= 11);
+    await page.locator('#clearanceBottom').fill('-80'); await page.waitForTimeout(200);
+    check('position-only footer movement also expands the reading area without leaving a blank strip', await page.evaluate(before => {
+      const view = document.querySelector('.book-viewport').getBoundingClientRect(), footer = document.querySelector('#bottom-bar').getBoundingClientRect();
+      return Math.abs(footer.height - before.footerHeight) < 1 && Math.abs(view.bottom - before.viewBottom - 20) < 1 && Math.abs(footer.top - view.bottom - 10) < 1 && __stillpoint.R.pos === before.pos;
+    }, loweredLayout));
+    await page.click('[data-close]'); await page.waitForTimeout(150); await shot('lowered-player-text');
     check('no application errors', errors.length === 0);
     console.log(`${count} reader polish checks passed`);
   } finally { if (browser) await browser.close(); fs.rmSync(temporary, { recursive: true, force: true }); }
