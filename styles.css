@@ -23,7 +23,7 @@
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); overscroll-behavior: none; }
-body { font: 16px/1.4 var(--ui); -webkit-text-size-adjust: 100%; overflow: hidden; position: fixed; inset: 0; }
+body { height: var(--app-height, 100dvh); font: 16px/1.4 var(--ui); -webkit-text-size-adjust: 100%; overflow: hidden; position: fixed; inset: 0; }
 #app { position: absolute; inset: 0; }
 button, input, select, textarea { font: inherit; color: inherit; }
 body, body * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
@@ -80,7 +80,7 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 #reader.has-audio #read-meta { display: none; }
 #audio-toolbar[hidden], .audio-skip[hidden] { display: none; }
 #audio-times { flex: 1; min-width: 0; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
-#audio-speed, #audio-sleep { flex: none; min-height: 36px; padding: 4px 8px; border: 1px solid var(--faint); border-radius: 10px; font-size: 12px; }
+#audio-options { flex: none; min-height: 36px; padding: 4px 8px; border: 1px solid var(--faint); border-radius: 10px; font-size: 12px; }
 .audio-skip { display: grid; place-items: center; min-width: 44px; min-height: 44px; font-size: 27px; line-height: .9; }
 .audio-skip small { font: 10px var(--ui); margin-top: 3px; }
 .audio-skip .i { width: 26px; height: 26px; }
@@ -135,7 +135,7 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 #reader.book-reading #wpm-box, #reader.book-reading #w-up, #reader.book-reading #w-down { display: none; }
 #reader.book-reading .bar { opacity: 1; pointer-events: auto; transform: none; }
 #reader.book-chrome-hidden .bar { opacity: 0; pointer-events: none; }
-#reader.book-chrome-hidden .book-viewport { top: calc(var(--safe-t) + var(--header-clearance) + 24px); bottom: calc(var(--safe-b) + 36px); }
+#reader.book-chrome-hidden .book-viewport { top: calc(var(--safe-t) + 12px); bottom: calc(var(--safe-b) + 28px); }
 #reader.book-chrome-hidden .book-folio { display: flex; bottom: calc(var(--safe-b) + 12px); }
 #reader.book-reading #r-settings { font: 500 23px Georgia, serif; }
 #book-dimmer { display: none; }
@@ -201,7 +201,7 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 #chapter-btn:active { background: var(--faint); }
 #chapter-btn b { font-weight: 600; font-size: 15px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #chapter-btn small { color: var(--dim); font-size: 12.5px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#bottom-bar { bottom: 0; padding: 2px calc(var(--safe-r) + 16px) calc(var(--safe-b) + 8px) calc(var(--safe-l) + 16px); touch-action: none; }
+#bottom-bar { bottom: 0; padding: 2px calc(var(--safe-r) + 16px) calc(var(--safe-b) + 4px) calc(var(--safe-l) + 16px); touch-action: none; }
 .playing .bar, .starting .bar { opacity: 0; pointer-events: none; }
 .playing #top-bar, .starting #top-bar { transform: translateY(-16px); }
 .playing #bottom-bar, .starting #bottom-bar { transform: translateY(16px); }
@@ -233,7 +233,7 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 #wpm-pop .pop-value small { font-size: 15px; font-weight: 500; color: var(--dim); margin-left: 5px; }
 #wpm-slider { width: 100%; height: 40px; margin: 4px 0 0; accent-color: var(--hi); touch-action: none; }
 #wpm-pop .pop-ends { display: flex; justify-content: space-between; color: var(--dim); font-size: 13px; font-variant-numeric: tabular-nums; }
-#back-place { position: absolute; left: 50%; bottom: calc(var(--safe-b) + 168px); transform: translateX(-50%); z-index: 3; background: var(--ink); color: var(--bg); padding: 9px 18px; border-radius: 22px; font-weight: 600; font-size: 15px; white-space: nowrap; }
+#back-place { position: absolute; left: 50%; bottom: calc(var(--reader-footer, 160px) + 12px); transform: translateX(-50%); z-index: 5; background: var(--ink); color: var(--bg); padding: 9px 18px; border-radius: 22px; font-weight: 600; font-size: 15px; white-space: nowrap; }
 #back-place[hidden] { display: none; }
 #jump-bar { position: absolute; left: 16px; right: 16px; bottom: calc(var(--safe-b) + 168px); z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 10px 14px; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--faint); border-radius: 22px; padding: 12px 14px 12px 18px; font-weight: 500; font-size: 15px; animation: jump-in .26s cubic-bezier(.2,.8,.2,1) both; }
 #jump-bar[hidden] { display: none; }
@@ -244,7 +244,7 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 
 /* Sheets */
 .scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, .46); z-index: 20; display: flex; align-items: flex-end; justify-content: center; }
-#sheets { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+#sheets { position: absolute; inset: 0; pointer-events: none; z-index: 20; }
 #sheets > * { pointer-events: auto; }
 .sheet { width: 100%; max-width: 640px; max-height: min(90%, calc(100% - var(--safe-t) - var(--header-clearance) - 12px)); background: var(--bg); border-radius: 22px 22px 0 0; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 -1px 0 var(--faint); }
 .sheet.tall { height: 90%; }
@@ -391,13 +391,13 @@ textarea.field-text { min-height: 180px; resize: vertical; font-family: var(--se
 .book-stat { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--faint); font-variant-numeric: tabular-nums; }
 .book-stat span:last-child { color: var(--dim); white-space: nowrap; }
 
-#toast { position: fixed; left: 50%; bottom: calc(var(--safe-b) + 28px); transform: translate(-50%, 10px); background: var(--ink); color: var(--bg); padding: 10px 18px; border-radius: 22px; font-size: 15px; font-weight: 500; opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none; z-index: 40; max-width: calc(100vw - 32px); text-align: center; }
+#toast { position: absolute; left: 50%; bottom: calc(var(--safe-b) + 28px); transform: translate(-50%, 10px); background: var(--ink); color: var(--bg); padding: 10px 18px; border-radius: 22px; font-size: 15px; font-weight: 500; opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none; z-index: 40; max-width: calc(100vw - 32px); text-align: center; }
 #toast.on { opacity: 1; transform: translate(-50%, 0); }
 
 /* Opaque viewport-edge backing for installed iOS apps. iOS can apply a
    native scroll-edge effect; the header also reserves extra clearance below it. */
 /* Opaque, hit-testable safe-area backing stops before any reader controls. */
-.edge { position: fixed; left: 0; right: 0; background: var(--bg); z-index: 15; }
+.edge { position: absolute; left: 0; right: 0; background: var(--bg); z-index: 15; }
 .edge-top { top: 0; height: var(--safe-t); }
 .edge-bottom { bottom: 0; height: var(--safe-b); }
 
@@ -465,3 +465,20 @@ label.menu-btn:active { opacity: .55; }
 @keyframes jump-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
 
 #story-prompt { width: 100%; min-height: 190px; max-height: 38vh; resize: vertical; padding: 12px; border: 1px solid var(--faint); border-radius: 12px; background: var(--panel); font: 13px/1.5 var(--ui); overflow-y: auto; }
+
+/* The book itself remains visible and usable above the appearance controls. */
+#sheets > .scrim.appearance-scrim { background: transparent; pointer-events: none; }
+.appearance-scrim .sheet { pointer-events: auto; height: min(44%, 340px); }
+.appearance-scrim .sheet-head { padding-top: 12px; }
+.appearance-scrim .sheet-head h2 { font-size: 20px; }
+.appearance-scrim .book-setting { margin: 10px 0; }
+.appearance-scrim .book-setting input[type=range] { display: block; width: 100%; }
+#reader.appearance-open .bar { opacity: 0; pointer-events: none; }
+#reader.appearance-open .book-viewport { top: calc(var(--safe-t) + 8px); bottom: calc(var(--appearance-height, 340px) + 12px); }
+#reader.appearance-open .book-folio, #reader.appearance-open #back-place { visibility: hidden; }
+#reader.book-chrome-hidden #back-place { bottom: calc(var(--safe-b) + 38px); }
+#r-fullscreen[hidden] { display: none; }
+.appearance-scrim .book-layout-choices button, .appearance-scrim .book-theme-choices button { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 8px; }
+.appearance-scrim .book-layout-choices b, .appearance-scrim .book-theme-choices b { font-size: 20px; }
+.appearance-scrim .book-setting select { min-height: 40px; padding: 8px 10px; margin-top: 6px; }
+.appearance-scrim .sheet-body { padding-bottom: calc(var(--safe-b) + 12px); }

@@ -1,4 +1,6 @@
 import * as db from './db.js';
+import { fitAppViewport } from './viewport.js';
+fitAppViewport();
 import { createBackup, inspectBackup, restoreBackup } from './backups.js';
 import { refreshInstalledApp } from './updates.js';
 import { BookReader } from './book-reader.js';
@@ -32,6 +34,7 @@ const ICON = {
   back: '<path d="M15 5l-7 7 7 7"/>', plus: '<path d="M12 5v14M5 12h14"/>',
   chart: '<path d="M5 20v-7M12 20V5M19 20v-11"/>',
   gear: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
+  expand: '<path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/>',
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>', list: '<path d="M4 7h16M4 12h16M4 17h10"/>',
   mark: '<path d="M7 4h10v16l-5-4-5 4z"/>', sound: '<path d="M4 10v4h3l5 4V6L7 10zM16 9a4 4 0 010 6M18.5 6.5a8 8 0 010 11"/>',
@@ -181,14 +184,18 @@ function applySettings() {
   $('meta[name=theme-color]').content = c.bg;
   if (R) renderWord(R.lastText || R.words[R.pos] || '');
   if (R?.bookView) {
-    const owner = R, anchor = R.pos;
+    const owner = R, anchor = R.appearanceAnchor ?? (R.bookView.browsing ? R.bookView.pos : R.pos);
     clearTimeout(R.bookReflowTimer);
-    R.bookReflowTimer = setTimeout(() => { if (R === owner) R.bookView?.reflow(anchor); }, 60);
+    R.bookReflowTimer = setTimeout(() => { if (R === owner) { if (R.appearanceAnchor !== undefined) R.bookView?.showWord(anchor, true); else R.bookView?.reflow(anchor); } }, 60);
   }
   for (const key of [S.wordFont, S.textFont]) {
     if (!DOWNLOADED_FONTS[key]) continue;
     document.fonts.load(`16px "${DOWNLOADED_FONTS[key]}"`).then(found => {
       if (!found.length) toast(`${DOWNLOADED_FONTS[key]} needs an internet connection the first time.`);
+      else if (key === S.textFont && R?.bookView) {
+        if (R.appearanceAnchor !== undefined) R.bookView.showWord(R.appearanceAnchor, true);
+        else R.bookView.reflow(R.bookView.browsing ? R.bookView.pos : R.pos);
+      }
     }).catch(() => {});
   }
 }
@@ -783,8 +790,11 @@ function chapterEndSeconds() {
 function updateListeningControls() {
   if (!R?.narration) return;
   const timer = R.sleepTimer?.state();
-  if ($('#audio-speed')) $('#audio-speed').textContent = `${R.book.audioRate || 1}×`;
-  if ($('#audio-sleep')) $('#audio-sleep').textContent = timer?.kind === 'duration' ? `Sleep ${audioClock(timer.remainingMs / 1000)}` : timer?.kind === 'chapter' ? 'Sleep · chapter' : 'Sleep';
+  if ($('#audio-options')) {
+    const sleep = timer?.kind === 'duration' ? ` · ◷ ${audioClock(timer.remainingMs / 1000)}` : timer?.kind === 'chapter' ? ' · ◷ Ch' : '';
+    $('#audio-options').textContent = `${R.book.audioRate || 1}×${sleep} ▾`;
+    $('#audio-options').setAttribute('aria-label', `Listening options, speed ${R.book.audioRate || 1} times${sleep ? ', sleep timer active' : ''}`);
+  }
   if ($('#audio-times')) {
     const position = R.narration.positionSeconds(), rate = R.book.audioRate || 1;
     const chapter = audioClock(Math.max(0, chapterEndSeconds() - position) / rate), book = audioClock(Math.max(0, R.narration.durationSeconds() - position) / rate);
@@ -834,17 +844,48 @@ function reportPlaybackError(error) {
   if (banner) { banner.hidden = false; $('#playback-error-message').textContent = R.playbackError; }
 }
 
+function setReaderFullscreen(hidden) {
+  if (!R || !bookMode()) return;
+  R.fullscreen = hidden;
+  $('#reader').classList.toggle('book-chrome-hidden', hidden);
+  $('#r-fullscreen')?.setAttribute('aria-pressed', String(hidden));
+}
+
 function showBookAppearance() {
+  if (!R?.bookView) return;
+  pause({ animate: false });
+  const owner = R;
+  let previewResize;
+  owner.appearanceAnchor = owner.bookView.browsing ? owner.bookView.pos : owner.pos;
   const sheet = openSheet('Reading appearance', `<div class="tabs book-appearance-tabs" role="tablist">
     <button role="tab" data-appearance="font">Font</button><button role="tab" data-appearance="layout">Layout</button><button role="tab" data-appearance="themes">Themes</button></div>
-    <div class="sheet-body" id="book-appearance-body"></div>`, { tall: true });
+    <div class="sheet-body" id="book-appearance-body"></div>`, { onClose: () => {
+      previewResize?.disconnect();
+      const anchor = owner.appearanceAnchor;
+      delete owner.appearanceAnchor;
+      if (R === owner && $('#reader')) {
+        $('#reader').classList.remove('appearance-open');
+        $('#reader').style.removeProperty('--appearance-height');
+        owner.bookView?.showWord(anchor ?? owner.pos, true);
+      }
+    } });
+  sheet.parentElement.classList.add('appearance-scrim');
+  sheet.setAttribute('aria-modal', 'false');
+  const previewPage = () => {
+    if (R !== owner || !sheet.isConnected) return;
+    const reader = $('#reader');
+    reader.classList.add('appearance-open');
+    reader.style.setProperty('--appearance-height', `${Math.ceil(sheet.getBoundingClientRect().height)}px`);
+    owner.bookView?.showWord(owner.appearanceAnchor, true);
+  };
+  previewResize = new ResizeObserver(previewPage); previewResize.observe(sheet);
+  previewPage();
   const body = $('#book-appearance-body', sheet);
   const field = (label, html) => `<label class="book-setting">${label}${html}</label>`;
   const select = (key, values) => `<select class="field-text" data-book-setting="${key}">${values.map(([value, label]) => `<option value="${value}" ${String(S[key]) === String(value) ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
   const draw = tab => {
     $$('[data-appearance]', sheet).forEach(button => button.setAttribute('aria-selected', button.dataset.appearance === tab));
-    if (tab === 'font') body.innerHTML = `<p class="book-type-preview">A little more space for the story.</p>
-      ${field('Font', select('textFont', fontOptions))}
+    if (tab === 'font') body.innerHTML = `${field('Font', select('textFont', fontOptions))}
       ${field('Text size', `<input type="range" aria-label="Book text size" data-book-setting="textSize" min="13" max="38" step="1" value="${S.textSize}">`)}
       ${field('Boldness', select('textWeight', [[400, 'Regular'], [500, 'Medium'], [600, 'Bold']]))}`;
     else if (tab === 'layout') body.innerHTML = `<div class="book-layout-choices" role="group" aria-label="Page layout">
@@ -865,6 +906,7 @@ function showBookAppearance() {
   sheet.addEventListener('input', event => {
     const key = event.target.dataset.bookSetting;
     if (!key) return;
+    owner.bookView.suppressUntil = performance.now() + 300;
     S[key] = event.target.type === 'checkbox' ? event.target.checked
       : ['textFont', 'textAlign', 'bookProgress'].includes(key) ? event.target.value : Number(event.target.value);
     R.animate = S.bookAnimation;
@@ -874,7 +916,7 @@ function showBookAppearance() {
     const tab = event.target.closest('[data-appearance]');
     if (tab) { draw(tab.dataset.appearance); return; }
     const layout = event.target.closest('[data-book-layout]');
-    if (layout) { R.book.bookLayout = layout.dataset.bookLayout; saveProgress(true); renderReader(); draw('layout'); return; }
+    if (layout) { R.book.bookLayout = layout.dataset.bookLayout; saveProgress(true); renderReader(); previewPage(); draw('layout'); return; }
     const theme = event.target.closest('[data-book-theme]');
     if (theme) { S.theme = theme.dataset.bookTheme; applySettings(); saveSettings(); draw('themes'); }
   });
@@ -1136,7 +1178,7 @@ function renderReader() {
       <div id="scrub-wrap"><div id="scrub-track"><div id="scrub-fill"></div></div>
         <input id="scrub" type="range" min="0" max="${Math.max(0, R.words.length - 1)}" step="1" value="${R.pos}" aria-label="Position in book"></div>
       <div id="read-meta"><span id="m-pct"></span><span id="m-left"></span></div>
-      <div id="audio-toolbar" hidden><span id="audio-progress"></span><span id="audio-times"></span><button id="audio-speed" aria-label="Playback speed">1×</button><button id="audio-sleep" aria-label="Sleep timer">Sleep</button></div>
+      <div id="audio-toolbar" hidden><span id="audio-progress"></span><span id="audio-times"></span><button id="audio-options" aria-label="Listening options" aria-haspopup="dialog">1× ▾</button></div>
       <div id="controls">
         <div class="side">
           <button class="icon-btn" id="r-toc" aria-label="Chapters, bookmarks, and search">${icon('list')}</button>
@@ -1149,6 +1191,7 @@ function renderReader() {
           <button class="icon-btn" id="w-down" aria-label="Slower">${icon('minus')}</button>
           <button id="wpm-box" aria-label="Choose reading speed" aria-expanded="false" aria-controls="wpm-pop"><b id="wpm-v"></b><small>WPM</small></button>
           <button class="icon-btn" id="w-up" aria-label="Faster">${icon('plus')}</button>
+          <button class="icon-btn" id="r-fullscreen" aria-label="Fullscreen reading" aria-pressed="false" hidden>${icon('expand')}</button>
           <button class="icon-btn" id="r-sound" aria-label="Ambient sound">${icon('sound')}</button>
         </div>
       </div>
@@ -1172,11 +1215,14 @@ function renderReader() {
     R.bookView = new BookReader($('#book-view'), R, {
       onPosition: pos => {
         if (!R) return;
-        if (narrating()) seek(pos);
+        if (R.appearanceAnchor !== undefined) R.appearanceAnchor = pos;
+        if (readerMode() === 'listen') return;
         else { R.pos = pos; updateMeta(); saveProgress(true); }
       },
+      isListening: () => readerMode() === 'listen',
+      onBrowse: away => { if ($('#back-place')) $('#back-place').hidden = !away; },
       onWordMenu: pos => { pause({ animate: false }); showWordMenu(pos); },
-      onToggleChrome: () => $('#reader').classList.toggle('book-chrome-hidden'),
+      onToggleChrome: () => { if (R.appearanceAnchor === undefined) setReaderFullscreen(!R.fullscreen); },
       onPage: info => {
         $('#book-navigation').hidden = info.layout !== 'pages';
         const el = $('#book-page-info'); if (el) el.textContent = info.label;
@@ -1189,6 +1235,8 @@ function renderReader() {
       },
     });
     R.bookView.setCurrent(R.pos, narrating());
+    $('#r-fullscreen').hidden = false;
+    setReaderFullscreen(!!R.fullscreen);
   }
   const owner = R, root = $('#reader'), footer = $('#bottom-bar');
   const header = $('#top-bar');
@@ -1246,7 +1294,7 @@ const flowFollower = new FollowScroll();
 function showFlowAt(pos, center, following = false) {
   if (bookMode() && R.bookView) {
     if (following) R.bookView.followWord(pos);
-    else R.bookView.showWord(pos, center && !R.bookView.manualPosition);
+    else if (!R.bookView.browsing) R.bookView.showWord(pos, center && !R.bookView.manualPosition);
     R.bookView.setCurrent(pos, narrating()); return;
   }
   const flow = $('#flow');
@@ -1657,6 +1705,7 @@ function seek(pos, { undo = false } = {}) {
   if (R.jump) clearJump();
   hideJumpBar();
   R.pos = clamp(pos, 0, R.words.length - 1);
+  if (R.bookView?.browsing) R.bookView.returnTo(R.pos);
   if (narrating()) {
     if (R.state !== 'paused') playNarration({ resume: false });
     else R.narration.playAt(R.pos, { paused: true, resume: false }).catch(error => toast(error.message));
@@ -1714,8 +1763,8 @@ function bindReader() {
   $('#r-mark').onclick = addBookmark;
   $('#r-mode').onclick = showReaderModes;
   $('#r-settings').onclick = () => bookMode() ? showBookAppearance() : showSettings();
-  $('#audio-speed').onclick = showListeningOptions;
-  $('#audio-sleep').onclick = showListeningOptions;
+  $('#audio-options').onclick = showListeningOptions;
+  $('#r-fullscreen').onclick = () => { setReaderFullscreen(true); toast('Tap the center of the page to show controls.'); };
   $('#audio-forward').onclick = () => skipAudio(15);
   $('#audio-recover').onclick = () => showNarration(R.book).catch(error => toast(error.message));
   $('#audio-read-instead').onclick = () => setReaderMode('read');
@@ -1741,7 +1790,7 @@ function bindReader() {
   $('#wpm-box').onclick = () => toggleWpmPop(!wpmPopOpen());
   $('#wpm-slider').oninput = e => setWpm(Number(e.target.value));
   $('#wpm-slider').onchange = () => saveProgress(true);
-  $('#back-place').onclick = () => showFlowAt(R.pos, true);
+  $('#back-place').onclick = () => { if (R.bookView) R.bookView.returnTo(R.pos); else showFlowAt(R.pos, true); };
   const scrub = $('#scrub');
   scrub.oninput = () => {
     R.scrubbing = true;
@@ -1885,7 +1934,7 @@ function showStoryContext(position = null) {
   const snapshot = { book: { title: R.book.title, author: R.book.author, chapters: R.book.chapters.map(chapter => ({ ...chapter })) }, words: R.words, glue: R.glue, chapterStarts: [...R.chapterStarts], position: cutoff };
   const sheet = openSheet('Story help', `<div class="sheet-body stack">
     <label for="story-kind">What would you like?</label><select class="field-text" id="story-kind"><option value="scene">Explain this scene</option><option value="summary">Summarize the book so far</option></select>
-    <p class="muted">Copy a prompt into your AI chat for a short scene explanation or a recap from the beginning to your cutoff. It includes your book, chapter, reading cutoff, and recent preceding text. Nothing is sent automatically.</p>
+    <p class="muted">Copy a prompt into your AI chat for a short scene explanation or a recap from the beginning to your cutoff. It includes your book, chapter, and a short passage marking your place. Nothing is sent automatically.</p>
     <button class="primary" id="story-copy">Copy prompt</button><p id="story-copy-status" class="muted" role="status">Only text up to the selected word is included. AI can still make mistakes or include spoilers despite these instructions.</p>
     <label for="story-prompt">Prompt to copy</label><textarea id="story-prompt" readonly spellcheck="false" aria-label="Story help prompt"></textarea>
     <p class="muted">For a more precise cutoff while reading, hold a word and choose “Explain up to this word.” Closing this panel keeps playback paused.</p></div>`, { tall: true });
@@ -2322,7 +2371,7 @@ function showSettings(startPage = null) {
   });
   sheet.addEventListener('click', e => {
     const nav = e.target.closest('[data-page]');
-    if (nav) { showPage(nav.dataset.page, 'in'); return; }
+    if (nav) { if (nav.dataset.page === 'Appearance' && R && bookMode()) showBookAppearance(); else showPage(nav.dataset.page, 'in'); return; }
     if (e.target.closest('#set-back')) { showPage(null, 'out'); return; }
     const pick = e.target.closest('[data-theme-pick]');
     if (pick) {
@@ -2734,7 +2783,8 @@ document.addEventListener('contextmenu', event => {
 });
 document.addEventListener('keydown', e => {
   if (!R || activeScrim() || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
-  if (bookMode() && R.bookView && !narrating()) {
+  if (e.key === 'Escape' && R.fullscreen) { setReaderFullscreen(false); return; }
+  if (bookMode() && R.bookView) {
     if (['ArrowLeft', 'PageUp', 'ArrowRight', 'PageDown'].includes(e.key)) {
       e.preventDefault(); R.bookView.turn(['ArrowLeft', 'PageUp'].includes(e.key) ? -1 : 1); return;
     }
@@ -2750,7 +2800,7 @@ document.addEventListener('keydown', e => {
 document.addEventListener('visibilitychange', () => {
   if (!R) return;
   if (document.hidden) {
-    if (bookMode() && R.bookView && !narrating()) R.pos = R.bookView.firstVisible();
+    if (readerMode() === 'read' && R.bookView) R.pos = R.bookView.firstVisible();
     if (narrating()) {
       R.narration.setBackground(true);
       R.narration.update(true);

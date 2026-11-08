@@ -59,3 +59,13 @@ Settings → Library and data → Save a backup prepares a ZIP with progress, th
 Restore previews the backup before writing. Existing books and settings stay intact by default; replacement of existing books and restoration of settings are separate choices. Replacing a book uses the backup’s text, place, bookmarks, and audio; if audio was omitted, its replacement is text-only. History is merged without duplicates. Each book’s text and complete audio are committed together after validation. Closing the panel cancels; completed books remain and the current failed replacement keeps its previous copy. Older v1 compressed archives are supported, with incremental raw-DEFLATE for large audio where the browser supports it. Free space is needed for staged replacements. Native iPhone Save to Files and memory-pressure acceptance remain necessary.
 
 `tests/backups.cjs` exercises a 416 MiB archive, canceled restores, CRC failures, missing audio, compressed legacy backups, share/download paths, and safe restore defaults in Chrome and WebKit.
+
+## Reader browsing and appearance
+
+Listen keeps a separate browsing view from the audio word. Manual scrolling/page turns never seek narration, including while paused. **Back to my place** returns to the current spoken word and re-enables following. Explicit word, chapter, search, and scrubber jumps remain intentional seeks. Reading visibility saves the listening position rather than the top browsed word.
+
+One listening-options button controls speed, sleep, and background sound. **Aa** opens a compact transparent-backed panel with the actual book visible above it for live font, margin, spacing, and theme changes. Appearance editing pauses playback and preserves its word. The four-corner button enters app fullscreen; center tap or Escape restores the controls without starting playback. iOS status and home gesture areas remain visible.
+
+Story Help produces simple scene or book-so-far requests identifying title, author, current chapter, approximate percentage, and a short past-only excerpt ending at the cutoff. No fixed bullet-count instructions or long rules are included. External AI output remains outside Stillpoint’s control.
+
+Installed iPhone viewport sizing corrects small status/safe-area-sized height shortfalls only when screen width matches and no keyboard-sized viewport reduction is present. Browser tabs and zoomed views are excluded from the screen-height correction. Physical iPhone viewport and native blur acceptance is still required.

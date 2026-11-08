@@ -114,6 +114,7 @@ export class BookReader {
     this.folio();
   }
   followWord(pos) {
+    if (this.browsing) { this.setCurrent(pos, true); return; }
     this.pos = clamp(pos, 0, Math.max(0, this.data.words.length - 1));
     const section = this.sectionFor(this.pos);
     if (this.section === undefined || (this.layout === 'pages' ? section !== this.section : section < this.first || section > this.last)) {
@@ -134,6 +135,16 @@ export class BookReader {
     this.text.querySelector('.bw.current')?.classList.remove('current');
     if (following) this.wordEl(pos)?.classList.add('current');
   }
+  browse() {
+    if (!this.callbacks.isListening?.()) return;
+    this.follower.cancel(); this.suppressUntil = 0;
+    if (!this.browsing) { this.browsing = true; this.callbacks.onBrowse?.(true); }
+  }
+  returnTo(pos) {
+    clearTimeout(this.scrollTimer);
+    this.browsing = false; this.callbacks.onBrowse?.(false);
+    this.showWord(pos, true);
+  }
   firstVisible() {
     const frame = this.viewport.getBoundingClientRect();
     let low = 0, high = this.wordNodes.length;
@@ -145,6 +156,7 @@ export class BookReader {
     return Number(this.wordNodes[Math.min(low, this.wordNodes.length - 1)]?.dataset.i || 0);
   }
   turn(direction) {
+    this.browse();
     if (this.layout === 'scroll') {
       this.viewport.scrollBy({ top: direction * this.viewport.clientHeight * .85, behavior: 'smooth' }); return;
     }
@@ -164,6 +176,7 @@ export class BookReader {
   }
   scrolled() {
     if (this.layout !== 'scroll' || this.follower.active || performance.now() < this.suppressUntil) return;
+    this.browse();
     const viewport = this.viewport;
     if (viewport.scrollTop + viewport.clientHeight > viewport.scrollHeight - 600 && this.last < this.sections.length - 1) {
       this.text.insertAdjacentHTML('beforeend', this.sectionHTML(++this.last));
@@ -196,6 +209,7 @@ export class BookReader {
   }
   bindGestures() {
     let gesture;
+    this.viewport.addEventListener('wheel', () => this.browse(), { passive: true });
     this.viewport.addEventListener('pointerdown', event => {
       this.follower.cancel(); this.suppressUntil = 0;
       if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -208,7 +222,7 @@ export class BookReader {
     });
     this.viewport.addEventListener('pointermove', event => {
       if (!gesture || event.pointerId !== gesture.id) return;
-      if (Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 10) clearTimeout(gesture.timer);
+      if (Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 10) { clearTimeout(gesture.timer); this.browse(); }
     });
     const finish = event => {
       if (!gesture || event.pointerId !== gesture.id) return;

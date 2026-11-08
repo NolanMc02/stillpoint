@@ -77,16 +77,16 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     await page.click('#r-context'); await page.waitForSelector('#story-prompt');
     check('the explanation panel also stays below the iPhone header-shield region', await page.locator('.sheet').evaluate(el => el.getBoundingClientRect().top >= 59));
     const prompt = await page.locator('#story-prompt').inputValue();
-    check('explanation prompt identifies book, chapter and exact cutoff', prompt.includes('The Quiet River') && prompt.includes('Chapter Five: The River') && prompt.includes('word 91 of 1000') && prompt.includes('"STOPWORD"'));
+    check('explanation prompt identifies book, chapter and exact cutoff', prompt.includes('The Quiet River') && prompt.includes('Chapter Five: The River') && prompt.includes('9.1%') && prompt.includes('STOPWORD”'));
     check('prompt excludes unread words in the same paragraph and future chapter titles', !prompt.includes('FUTURE_SECRET_SENTINEL') && !prompt.includes('FUTURE_CHAPTER_SENTINEL'));
-    check('prompt explicitly requests concise explanations without completing sentences or foreshadowing', prompt.includes('3–5 short bullets') && prompt.includes('150 words') && prompt.includes('Do not finish an incomplete sentence') && prompt.includes('hint at future importance'));
+    check('scene prompt is a simple request with a brief cutoff excerpt and no-spoiler instruction', prompt.includes('Can you help me understand what is going on at this point') && prompt.includes('don’t spoil anything after the quoted text') && prompt.length < 1100 && !prompt.includes('Please follow these rules'));
     await page.click('#story-copy');
     check('Copy prompt copies the frozen snapshot', await page.evaluate(() => window.__copied === document.querySelector('#story-prompt').value)); await shot('story-prompt');
     await page.selectOption('#story-kind', 'summary');
     const summary = await page.locator('#story-prompt').inputValue();
-    check('book recap asks for events from the beginning to the cutoff', summary.startsWith('Summarize this book from its beginning') && summary.includes('5–7 short bullets') && summary.includes('250 words'));
-    check('recap keeps the same exact cutoff and excludes unread words and future chapter labels', summary.includes('word 91 of 1000') && !summary.includes('FUTURE_SECRET_SENTINEL') && !summary.includes('FUTURE_CHAPTER_SENTINEL'));
-    check('recap asks for earlier text rather than invented plot when book knowledge is insufficient', summary.includes('location marker, not the full earlier book') && summary.includes('ask me for earlier text instead of inventing a recap'));
+    check('book recap asks for events from the beginning to the cutoff', summary.includes('Can you briefly explain the story from the beginning up to this point?'));
+    check('recap keeps the same exact cutoff and excludes unread words and future chapter labels', summary.includes('STOPWORD”') && summary.includes('9.1%') && !summary.includes('FUTURE_SECRET_SENTINEL') && !summary.includes('FUTURE_CHAPTER_SENTINEL'));
+    check('recap stays short and carries the same simple spoiler boundary', summary.length < 1100 && summary.includes('don’t spoil anything after the quoted text, even later in this chapter'));
     await page.click('#story-copy');
     check('copying after switching copies the recap rather than the scene prompt', await page.evaluate(() => window.__copied === document.querySelector('#story-prompt').value) && summary !== prompt);
     await page.selectOption('#story-kind', 'scene');
@@ -108,12 +108,92 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     await page.locator('.book-viewport').dispatchEvent('pointerup', { pointerId: 4, pointerType: 'touch', clientX: 120, clientY: 300 });
     await page.click('[data-a="explain"]');
     const precise = await page.locator('#story-prompt').inputValue();
-    check('word-menu explanation uses that exact word instead of the page anchor', precise.includes('word 41 of 1000') && !precise.includes('STOPWORD') && !precise.includes('FUTURE_SECRET_SENTINEL'));
+    check('word-menu explanation uses that exact word instead of the page anchor', precise.includes('4.1%') && !precise.includes('STOPWORD') && !precise.includes('FUTURE_SECRET_SENTINEL'));
     const boundary = await page.evaluate(async () => {
       const { buildStoryPrompt } = await import('/js/story-context.js'), r = __stillpoint.R;
       return { first: buildStoryPrompt({ ...r, position: 0 }), late: buildStoryPrompt({ ...r, position: 900 }) };
     });
-    check('first-word and long-book prompt boundaries remain bounded and past-only', boundary.first.includes('word 1 of 1000') && !boundary.first.includes('quiet river') && boundary.late.includes('[Earlier text omitted]') && boundary.late.length < 9000);
+    check('first-word and long-book prompt boundaries remain bounded and past-only', boundary.first.includes('0.1%') && !boundary.first.includes('quiet river') && boundary.late.includes('90.1%') && boundary.late.length < 1100);
+    // Exercise viewport correction against a simulated installed-iPhone short viewport.
+    const sizing = await page.evaluate(async () => {
+      const { appViewportHeight: fit } = await import('/js/viewport.js');
+      const base = { height: 793, width: 393, screenWidth: 393, screenHeight: 852, apple: true, standalone: true, safeTop: 59, safeBottom: 34 };
+      return [fit(base), fit({ ...base, height: 852 }), fit({ ...base, visualHeight: 450 }), fit({ ...base, standalone: false }), fit({ ...base, height: 372, width: 852, screenWidth: 852, screenHeight: 393, safeTop: 0, safeBottom: 21 })];
+    });
+    check('viewport correction covers the shortened iPhone screen without extending through a keyboard or browser toolbar', sizing.join(',') === '852,852,450,793,393');
+    await page.evaluate(() => {
+      Object.defineProperty(visualViewport, 'height', { configurable: true, get: () => window.__reportedHeight ?? 852 });
+      window.__reportedHeight = 793; visualViewport.dispatchEvent(new Event('resize'));
+    });
+    await page.waitForTimeout(120);
+    check('a shortened iPhone viewport still places the app at the physical bottom', await page.evaluate(() => Math.abs(document.body.getBoundingClientRect().height - 852) < 1 && Math.abs(document.querySelector('#bottom-bar').getBoundingClientRect().bottom - 852) < 1));
+    await page.evaluate(() => { window.__reportedHeight = 450; visualViewport.dispatchEvent(new Event('resize')); });
+    await page.waitForTimeout(120);
+    check('keyboard-sized viewport keeps sheets above the keyboard', await page.evaluate(() => Math.abs(document.querySelector('#sheets').getBoundingClientRect().bottom - 450) < 1));
+    await page.evaluate(() => { window.__reportedHeight = 852; visualViewport.dispatchEvent(new Event('resize')); });
+    await page.evaluate(async () => {
+      const db = await import('/js/db.js'), r = __stillpoint.R;
+      await db.saveBook({ ...r.book, readerMode: 'listen', audioMode: 'page', readingView: 'book', bookLayout: 'scroll', pos: 90 }, { id: r.book.id, blocks: r.blocks });
+      await db.put('kv', { ...__stillpoint.S, textSize: 19, textMargin: 22, textFont: 'iowan', theme: 'oled' }, 'settings');
+    });
+    await page.reload(); await page.waitForSelector('.book-viewport'); await page.waitForTimeout(350);
+    const bottom = await page.evaluate(() => ({ gap: document.body.getBoundingClientRect().bottom - document.querySelector('#play').getBoundingClientRect().bottom, count: document.querySelectorAll('#audio-toolbar button').length }));
+    check('player leaves only the home-gesture inset plus four pixels below Play', Math.abs(bottom.gap - 38) < 1);
+    check('one listening-options button replaces duplicate speed and Sleep buttons', bottom.count === 1 && await page.locator('#audio-options').textContent() === '1× ▾');
+    await page.click('#audio-options'); await page.selectOption('#sleep-choice', '5'); await page.click('[data-close]');
+    check('the single listening button also indicates an active sleep timer', (await page.locator('#audio-options').getAttribute('aria-label')).includes('sleep timer active'));
+    await page.click('#audio-options'); await page.selectOption('#sleep-choice', 'off'); await page.click('[data-close]');
+    const audioBefore = await page.evaluate(() => __stillpoint.R.narration.audio.currentTime);
+    await page.evaluate(() => { const v = __stillpoint.R.bookView; v.suppressUntil = 0; v.viewport.scrollTop += 400; });
+    await page.waitForTimeout(350);
+    check('scrolling paused Listen browses without seeking audio or changing the saved position', await page.evaluate(async time => {
+      const r = __stillpoint.R, db = await import('/js/db.js'); dispatchEvent(new Event('pagehide')); await new Promise(resolve => setTimeout(resolve, 30));
+      return r.bookView.browsing && r.pos === 90 && Math.abs(r.narration.audio.currentTime - time) < .05 && (await db.get('books', r.book.id)).pos === 90;
+    }, audioBefore));
+    check('scrolling away offers Back to my place', await page.locator('#back-place').isVisible());
+    await page.click('#back-place'); await page.click('#play'); await page.waitForFunction(() => __stillpoint.R.state === 'playing');
+    const runningBefore = await page.evaluate(() => __stillpoint.R.narration.audio.currentTime);
+    await page.locator('.book-viewport').dispatchEvent('pointerdown', { pointerId: 11, pointerType: 'touch', clientX: 160, clientY: 380 });
+    await page.locator('.book-viewport').dispatchEvent('pointermove', { pointerId: 11, pointerType: 'touch', clientX: 160, clientY: 300 });
+    await page.evaluate(() => { const v = __stillpoint.R.bookView; v.viewport.scrollTop += 400; });
+    await page.locator('.book-viewport').dispatchEvent('pointerup', { pointerId: 11, pointerType: 'touch', clientX: 160, clientY: 300 });
+    await page.waitForTimeout(300);
+    const browsingTop = await page.evaluate(() => __stillpoint.R.bookView.viewport.scrollTop);
+    await page.waitForTimeout(300);
+    check('audio continues at its own clock while manual browsing remains still', await page.evaluate(({ time, top }) => {
+      const r = __stillpoint.R; return r.bookView.browsing && !r.narration.audio.paused && r.narration.audio.currentTime > time && r.narration.audio.currentTime - time < 2 && Math.abs(r.bookView.viewport.scrollTop - top) < 2;
+    }, { time: runningBefore, top: browsingTop }));
+    await shot('listen-browsing');
+    await page.click('#back-place');
+    check('Back to my place restores following at the spoken word without pausing', await page.evaluate(() => { const r = __stillpoint.R, el = r.bookView.wordEl(r.pos), frame = r.bookView.viewport.getBoundingClientRect(), rect = el.getBoundingClientRect(); return !r.bookView.browsing && !r.narration.audio.paused && rect.top >= frame.top && rect.bottom <= frame.bottom; }));
+    await page.click('#play');
+    const saved = await page.evaluate(() => __stillpoint.R.pos);
+    await page.click('#r-settings'); await page.waitForTimeout(150);
+    await shot('appearance-open');
+    check('appearance panel leaves the actual book visible and tappable above it', await page.evaluate(() => {
+      const view = document.querySelector('.book-viewport').getBoundingClientRect(), panel = document.querySelector('.sheet').getBoundingClientRect();
+      return view.height > 250 && view.bottom <= panel.top - 8 && !!document.elementFromPoint(view.x + view.width / 2, view.y + view.height / 2)?.closest('.book-viewport') && panel.height <= 345;
+    }));
+    await page.locator('[data-book-setting="textSize"]').evaluate(el => { el.value = 30; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.waitForTimeout(180);
+    check('font size previews directly on the book without changing the listening position', await page.evaluate(pos => getComputedStyle(document.querySelector('.book-text')).fontSize === '30px' && __stillpoint.R.pos === pos, saved));
+    await page.click('[data-appearance="layout"]');
+    await page.locator('[data-book-setting="textMargin"]').evaluate(el => { el.value = 44; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.waitForTimeout(180);
+    check('margin changes preview on the actual book while the panel stays open', await page.evaluate(pos => document.querySelector('.book-viewport').getBoundingClientRect().left === 44 && __stillpoint.R.pos === pos && !!document.querySelector('.appearance-scrim'), saved));
+    await shot('live-appearance');
+    await page.click('[data-book-layout="pages"]'); await page.waitForTimeout(180);
+    check('switching to pages keeps the live preview and saved listening point', await page.evaluate(pos => __stillpoint.R.bookView.layout === 'pages' && __stillpoint.R.pos === pos && document.querySelector('#reader').classList.contains('appearance-open'), saved));
+    await page.click('[data-close]'); await page.waitForTimeout(200);
+    const normalHeight = await page.locator('.book-viewport').evaluate(el => el.getBoundingClientRect().height);
+    await page.click('#r-fullscreen'); await page.waitForTimeout(180);
+    check('explicit fullscreen hides app controls and gives the space to the book', await page.evaluate(({ pos, height }) => {
+      const v = document.querySelector('.book-viewport').getBoundingClientRect(); return __stillpoint.R.fullscreen && __stillpoint.R.pos === pos && v.height > height + 100 && getComputedStyle(document.querySelector('#top-bar')).opacity === '0' && getComputedStyle(document.querySelector('#bottom-bar')).pointerEvents === 'none';
+    }, { pos: saved, height: normalHeight }));
+    await shot('fullscreen');
+    await page.locator('.book-viewport').evaluate(el => { const r = el.getBoundingClientRect(); el.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 17, clientX: r.x + r.width * .5, clientY: r.y + r.height * .4 })); el.dispatchEvent(new PointerEvent('pointerup', { pointerId: 17, clientX: r.x + r.width * .5, clientY: r.y + r.height * .4 })); });
+    await page.waitForTimeout(180);
+    check('center tap exits fullscreen and restores controls without autoplay', await page.evaluate(pos => !__stillpoint.R.fullscreen && __stillpoint.R.pos === pos && getComputedStyle(document.querySelector('#bottom-bar')).opacity === '1' && __stillpoint.R.narration.audio.paused, saved));
     check('no application errors', errors.length === 0);
     console.log(`${count} reader polish checks passed`);
   } finally { if (browser) await browser.close(); fs.rmSync(temporary, { recursive: true, force: true }); }

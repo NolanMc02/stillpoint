@@ -74,7 +74,7 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     await page.click('#r-rew'); await page.waitForFunction(() => __stillpoint.R.narration.clipIndex === 0);
     check('back skip preserves the paused position across clips', await page.evaluate(() => Math.abs(__stillpoint.R.narration.positionSeconds() - 2) < .1 && __stillpoint.R.narration.audio.paused));
     await page.click('#r-rew'); await page.waitForFunction(() => __stillpoint.R.narration.positionSeconds() < .1);
-    await page.click('#audio-speed'); await page.selectOption('#audio-rate', '2'); await page.click('[data-close]');
+    await page.click('#audio-options'); await page.selectOption('#audio-rate', '2'); await page.click('[data-close]');
     check('speed updates chapter/book remaining time', (await page.locator('#audio-times').getAttribute('aria-label')).includes('0:06 remaining in chapter') && (await page.locator('#audio-times').getAttribute('aria-label')).includes('0:18 remaining in book'));
     await page.click('#play'); await page.waitForFunction(() => __stillpoint.R.narration.audio.currentTime > .2);
     check('native narration and background sound run together', await page.evaluate(async () => !__stillpoint.R.narration.audio.paused && (await import('/js/sounds.js')).soundState().playing === 'brown'));
@@ -100,7 +100,7 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     await page.evaluate(() => window.__hide(false));
     await page.evaluate(async () => { await __stillpoint.R.narration.seekSeconds(1, { paused: true }); });
     await page.click('#play'); await page.waitForFunction(() => __stillpoint.R.state === 'playing');
-    await page.click('#audio-sleep'); await page.selectOption('#sleep-choice', 'chapter'); await page.click('[data-close]');
+    await page.click('#audio-options'); await page.selectOption('#sleep-choice', 'chapter'); await page.click('[data-close]');
     await page.evaluate(async () => { await __stillpoint.R.narration.seekSeconds(12.2, { paused: false }); __stillpoint.R.narration.audio.dispatchEvent(new Event('timeupdate')); });
     await page.waitForFunction(() => __stillpoint.R.state === 'paused');
     check('end-of-chapter sleep stops at the chapter boundary', await page.evaluate(() => Math.abs(__stillpoint.R.narration.positionSeconds() - 12) < .15 && __stillpoint.R.sleepTimer.state().kind === 'off'));

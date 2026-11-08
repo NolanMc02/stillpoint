@@ -185,7 +185,7 @@ async function packageFor(job) {
     }));
     await page.click('#r-mode'); await page.click('[data-mode="rsvp"]'); await page.check('#rsvp-audio');
     check('one reading-mode selector is the first control', await page.evaluate(() => document.querySelector('#mode-body').firstElementChild.classList.contains('mode-choices')));
-    await page.click('[data-close]'); await page.click('#audio-speed'); await page.selectOption('#audio-rate', '1.5');
+    await page.click('[data-close]'); await page.click('#audio-options'); await page.selectOption('#audio-rate', '1.5');
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'audiobook-controls.png') });
     await page.click('[data-close]');
     await page.locator('#flow-inner .w.cur').tap();
