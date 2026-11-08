@@ -1,10 +1,12 @@
 // Reflowable pages and continuous scrolling over the same word IDs as RSVP/audio.
+import { FollowScroll } from './follow-scroll.js';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 
 export class BookReader {
   constructor(root, data, callbacks = {}) {
     this.root = root; this.data = data; this.callbacks = callbacks;
+    this.follower = new FollowScroll();
     this.layout = data.book.bookLayout || 'pages'; this.pos = data.pos;
     this.sections = []; this.page = 0; this.pageCount = 1; this.suppressUntil = 0;
     const chapters = new Map(data.book.chapters.map(c => [c.block, c.title]));
@@ -93,6 +95,7 @@ export class BookReader {
     this.viewport.scrollLeft = this.page * this.step;
   }
   showWord(pos, initial = false) {
+    this.follower.cancel();
     this.pos = clamp(pos, 0, Math.max(0, this.data.words.length - 1));
     const section = this.sectionFor(this.pos);
     const load = this.section === undefined || (this.layout === 'pages' ? section !== this.section : section < this.first || section > this.last);
@@ -109,6 +112,22 @@ export class BookReader {
     }
     this.setCurrent(this.pos, this.following);
     this.folio();
+  }
+  followWord(pos) {
+    this.pos = clamp(pos, 0, Math.max(0, this.data.words.length - 1));
+    const section = this.sectionFor(this.pos);
+    if (this.section === undefined || (this.layout === 'pages' ? section !== this.section : section < this.first || section > this.last)) {
+      this.showWord(this.pos, true); return;
+    }
+    this.suppressUntil = performance.now() + 1200;
+    if (this.layout === 'pages') {
+      const previous = this.page;
+      this.alignPage(this.pos);
+      if (previous !== this.page && this.data.animate !== false && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        this.text.animate([{ opacity: .35 }, { opacity: 1 }], { duration: 220 });
+      }
+    } else this.follower.follow(this.viewport, this.wordEl(this.pos));
+    this.setCurrent(this.pos, true); this.folio();
   }
   setCurrent(pos, following = false) {
     this.following = following;
@@ -144,7 +163,7 @@ export class BookReader {
     this.folio();
   }
   scrolled() {
-    if (this.layout !== 'scroll' || performance.now() < this.suppressUntil) return;
+    if (this.layout !== 'scroll' || this.follower.active || performance.now() < this.suppressUntil) return;
     const viewport = this.viewport;
     if (viewport.scrollTop + viewport.clientHeight > viewport.scrollHeight - 600 && this.last < this.sections.length - 1) {
       this.text.insertAdjacentHTML('beforeend', this.sectionHTML(++this.last));
@@ -178,6 +197,7 @@ export class BookReader {
   bindGestures() {
     let gesture;
     this.viewport.addEventListener('pointerdown', event => {
+      this.follower.cancel(); this.suppressUntil = 0;
       if (event.pointerType === 'mouse' && event.button !== 0) return;
       gesture = { id: event.pointerId, x: event.clientX, y: event.clientY };
       const word = event.target.closest('.bw');
@@ -205,5 +225,5 @@ export class BookReader {
     this.viewport.addEventListener('pointerup', finish);
     this.viewport.addEventListener('pointercancel', finish);
   }
-  destroy() { this.resize.disconnect(); cancelAnimationFrame(this.settleFrame); clearTimeout(this.resizeTimer); clearTimeout(this.scrollTimer); clearTimeout(this.gestureTimer); }
+  destroy() { this.follower.cancel(); this.resize.disconnect(); cancelAnimationFrame(this.settleFrame); clearTimeout(this.resizeTimer); clearTimeout(this.scrollTimer); clearTimeout(this.gestureTimer); }
 }

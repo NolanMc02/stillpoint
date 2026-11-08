@@ -128,7 +128,7 @@ async function requestGeneration(kind) {
   }
   const id = 'studio-' + crypto.randomUUID();
   const metadata = { id, title: selected.title, author: selected.author || '', format: selected.format,
-    chapters: selected.chapters || [], bookmarks: [] };
+    chapters: selected.chapters || [], bookmarks: [], cover: selected.cover || null };
   const content = { id, blocks: selected.blocks, ...(selected.cleanup ? { cleanup: selected.cleanup } : {}) };
   const job = await createNarrationJob(metadata, content);
   const result = await api('/api/jobs', { kind, job, readingBook: kind === 'book' ? { format: 'stillpoint-reading-book', version: 1, book: metadata, content } : null,

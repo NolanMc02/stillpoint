@@ -64,7 +64,7 @@ export function cleanBook(source, choices = defaultBookOptions()) {
     return true;
   });
   return {
-    title: source.title, author: source.author, format: source.format, blocks, chapters,
+    title: source.title, author: source.author, format: source.format, blocks, chapters, cover: source.cover || null,
     cleanup: { version: 1, source, options },
   };
 }

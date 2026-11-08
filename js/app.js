@@ -1,12 +1,14 @@
 import * as db from './db.js';
 import { refreshInstalledApp } from './updates.js';
 import { BookReader } from './book-reader.js';
+import { FollowScroll } from './follow-scroll.js';
+import { makeCover, validCover } from './covers.js';
 import { openAudiobookZip } from './audiobook-zip.js';
 import { createNarrationJob, readNarrationPackage, validateManifest, NarrationPlayer } from './narration.js';
 import {
   buildIndex, buildSegments, chunkAt, estimateMs, formatDuration, lowerBound, rampFactor, splitAtPivot, tokenize, wordDelay,
 } from './engine.js';
-import { ImportError, finishPdf, importFile, textToBook } from './importers.js';
+import { ImportError, finishPdf, importFile, readEpubCover, textToBook } from './importers.js';
 import { defaultCleanOptions, parsePageList } from './pdfclean.js';
 import { anchorPosition, blockChoice, CLEAN_ROLES, cleanBook, defaultBookOptions, positionAnchor } from './bookclean.js';
 import { computeStreaks, monthGrid } from './streaks.js';
@@ -72,6 +74,7 @@ const DEFAULTS = {
   theme: 'tide', customBg: '#102A2A', customInk: '#E6EFE8', customHi: '#FF9F5A',
   wordFont: 'newyork', wordSize: 48, wordWeight: 500, wordY: 42, pivotX: 50, pivotMode: 'orp', pivotStyle: 'color',
   guides: true, guideDist: 100, wordsPerFlash: 1, liveProgress: true, liveText: false, chapterCall: true,
+  contextWords: false, contextCount: 2,
   textFont: 'iowan', textSize: 19, textLead: 1.6, textMargin: 22, textAlign: 'left',
   textWeight: 400, bookIndent: true, bookAnimation: true, bookDim: 0, bookProgress: 'page',
   wpm: 300, wpmStep: 25, wpmMin: 50, wpmMax: 1500, perBookWpm: true, countdown: 3, ramp: 5, rewind: 10, resumeBack: 0,
@@ -91,6 +94,8 @@ const GOAL_SETTINGS = [
 const SETTINGS = [
   ['Colors', [{ type: 'themes' }, { type: 'custom' }]],
   ['RSVP word', [
+    { k: 'contextWords', label: 'Surrounding words', help: 'Show faint previous and upcoming words beside the RSVP word.', type: 'toggle' },
+    { k: 'contextCount', label: 'Words on each side', type: 'range', min: 1, max: 3, step: 1 },
     { k: 'wordFont', label: 'Font', type: 'select', options: fontOptions },
     { k: 'wordSize', label: 'Word size', type: 'range', min: 24, max: 96, step: 1, unit: ' pt' },
     { k: 'wordWeight', label: 'Weight', type: 'select', options: [[300, 'Light'], [400, 'Regular'], [500, 'Medium'], [600, 'Semibold'], [700, 'Bold']], num: true },
@@ -355,10 +360,12 @@ function renderLibrary(books) {
       const left = done ? 'Finished' : `${formatDuration(estimateMs(b.wordCount - b.pos, wpm, S.smartPacing))} left`;
       return `<article class="book-row">
         <button class="book-open" data-open="${esc(b.id)}">
+          <span class="book-cover" aria-hidden="true">${validCover(b.cover) ? `<img src="${b.cover}" alt="" loading="lazy">` : `<span>${esc(String(b.title || 'Untitled').slice(0, 1))}</span>`}</span><span class="book-details">
           <h2 class="book-title">${esc(b.title)}</h2>
           ${b.author ? `<div class="book-author">${esc(cleanAuthor(b.author))}</div>` : ''}
           <div class="book-progress"><i style="width:${done ? 100 : p}%"></i></div>
           <div class="book-meta"><span>${done ? 100 : p}%</span><span>${left}</span></div>
+          </span>
         </button>
         <button class="icon-btn" data-more="${esc(b.id)}" aria-label="More options for ${esc(b.title)}">${icon('more')}</button>
       </article>`;
@@ -378,10 +385,21 @@ function renderLibrary(books) {
 function showBookMenu(book) {
   const sheet = openSheet(book.title, `<div class="sheet-body">
     <button class="menu-btn" data-a="rename">Rename</button>
+    <label class="menu-btn" for="cover-pick">${book.cover ? 'Change' : 'Add'} cover<small>Choose the original EPUB or a cover image</small></label>
+    <input id="cover-pick" type="file" accept=".epub,image/jpeg,image/png,image/webp" hidden>
     ${book.hasCleanup ? '<button class="menu-btn" data-a="cleanup">Review reading text</button>' : ''}
     <button class="menu-btn" data-a="narration">Audiobook</button>
     <button class="menu-btn" data-a="restart">Read again from the start</button>
     <button class="menu-btn danger" data-a="delete">Delete book</button></div>`);
+  $('#cover-pick', sheet).onchange = async event => {
+    const file = event.target.files[0]; if (!file) return;
+    try {
+      const cover = /\.epub$/i.test(file.name) ? await readEpubCover(file) : await makeCover(file);
+      if (!cover) throw new Error('No cover was found in that EPUB. Choose an image instead.');
+      const saved = await db.get('books', book.id); saved.cover = cover; await db.put('books', saved);
+      closeSheet(); await showLibrary(); toast('Cover updated');
+    } catch (error) { toast(error.message, 6000); }
+  };
   sheet.onclick = async e => {
     const action = e.target.closest('[data-a]')?.dataset.a;
     if (action === 'rename') {
@@ -458,7 +476,7 @@ async function storeBook(parsed) {
   const book = {
     id, title: parsed.title || 'Untitled', author: cleanAuthor(parsed.author), format: parsed.format,
     addedAt: now, lastReadAt: 0, wordCount: words.length, pos: 0, finishedAt: null, wpm: null,
-    chapters: parsed.chapters || [], bookmarks: [], hasCleanup: !!parsed.cleanup,
+    chapters: parsed.chapters || [], bookmarks: [], hasCleanup: !!parsed.cleanup, cover: validCover(parsed.cover),
   };
   await db.saveBook(book, { id, blocks, ...(parsed.cleanup ? { cleanup: parsed.cleanup } : {}) });
   return id;
@@ -481,7 +499,7 @@ async function importGeneratedPackage(file, onProgress = () => {}) {
   const book = { id, title: String(payload.book?.title || 'Untitled'), author: cleanAuthor(payload.book?.author || ''),
     format: 'epub', addedAt: now, lastReadAt: 0, wordCount: buildIndex(blocks).words.length, pos: 0,
     finishedAt: null, wpm: null, chapters, bookmarks: [], hasCleanup: !!payload.content.cleanup,
-    readingView: 'book', bookLayout: 'pages', audioMode: 'page', audioRate: 1 };
+    readingView: 'book', bookLayout: 'pages', audioMode: 'page', audioRate: 1, cover: validCover(payload.book?.cover) };
   const content = { id, blocks, ...(payload.content.cleanup ? { cleanup: payload.content.cleanup } : {}) };
   await db.put('kv', { name: file.name, bookId: id, startedAt: Date.now() }, 'pendingAudiobookImport');
   onProgress('Checking that the book and narration match…');
@@ -762,7 +780,7 @@ async function attachNarration() {
           owner.sessionWords += Math.max(0, pos - owner.pos);
           owner.pos = pos;
           if (!document.hidden) {
-            if (owner.book.audioMode === 'page') showFlowAt(pos, true);
+            if (owner.book.audioMode === 'page') showFlowAt(pos, true, owner.state === 'playing');
             else renderWord(owner.words[pos]);
             if (!owner.scrubbing && !owner.jump) updateMeta();
           }
@@ -803,6 +821,8 @@ function applyNarrationMode() {
 }
 
 async function playNarration({ resume = true } = {}) {
+  unlockAudio();
+  if (S.sound !== 'off') playSound(S.sound, S.volume);
   const owner = R;
   const run = ++owner.run;
   clearTimeout(owner.timer);
@@ -966,6 +986,7 @@ function renderReader() {
         <div id="chapter-call"></div>
         <div class="tick" id="tick-a"></div><div class="tick" id="tick-b"></div>
         <div id="word"><span id="w-left"></span><span id="w-pivot"></span><span id="w-right"></span></div>
+        <span id="context-before" class="rsvp-context" aria-hidden="true"></span><span id="context-after" class="rsvp-context" aria-hidden="true"></span>
         <div id="count"></div>
       </div>
       <div id="live-text"></div>
@@ -1091,8 +1112,13 @@ function setCurrentClass() {
   $('#flow-inner .w.cur')?.classList.remove('cur');
   wordEl(R.pos)?.classList.add('cur');
 }
-function showFlowAt(pos, center) {
-  if (bookMode() && R.bookView) { R.bookView.showWord(pos, center && !R.bookView.manualPosition); R.bookView.setCurrent(pos, narrating()); return; }
+const flowFollower = new FollowScroll();
+function showFlowAt(pos, center, following = false) {
+  if (bookMode() && R.bookView) {
+    if (following) R.bookView.followWord(pos);
+    else R.bookView.showWord(pos, center && !R.bookView.manualPosition);
+    R.bookView.setCurrent(pos, narrating()); return;
+  }
   const flow = $('#flow');
   const seg = segOf(pos);
   if (seg < R.loaded[0] || seg > R.loaded[1]) loadWindow(seg);
@@ -1102,7 +1128,8 @@ function showFlowAt(pos, center) {
     if (el) {
       const fr = flow.getBoundingClientRect();
       const er = el.getBoundingClientRect();
-      flow.scrollTop += er.top - fr.top - fr.height * 0.38;
+      if (following) flowFollower.follow(flow, el);
+      else { flowFollower.cancel(); flow.scrollTop += er.top - fr.top - fr.height * 0.38; }
     }
   }
   R.ignoreScrollUntil = performance.now() + 250;
@@ -1161,6 +1188,18 @@ function renderWord(text) {
   pivot.textContent = parts.pivot;
   right.textContent = parts.right;
   layoutWord(left, pivot, right, $('#word'), S.wordSize);
+  const before = $('#context-before'), after = $('#context-after');
+  if (!before || !after) return;
+  before.hidden = after.hidden = !S.contextWords;
+  if (S.contextWords) {
+    const end = R.pos + (narrating() ? 1 : chunkAt(R.pos, R.words, R.wordBlock, S.wordsPerFlash, R.glue).count);
+    const count = clamp(S.contextCount || 2, 1, 3);
+    before.textContent = R.words.slice(Math.max(0, R.pos - count), R.pos).join(' ');
+    after.textContent = R.words.slice(end, end + count).join(' ');
+    const frame = $('#word').getBoundingClientRect(), first = left.getBoundingClientRect(), last = right.getBoundingClientRect();
+    before.style.width = `${Math.max(0, first.left - frame.left - 26)}px`;
+    after.style.left = `${last.right - frame.left + 16}px`;
+  }
 }
 function layoutWord(left, pivot, right, box, size) {
   box.style.fontSize = `${size}px`;
@@ -1441,6 +1480,7 @@ function commitSession() {
 function pause({ animate = true } = {}) {
   if (!R || R.state === 'paused') return;
   R.run++;
+  flowFollower.cancel(); R.bookView?.follower.cancel();
   R.narration?.pause();
   clearTimeout(R.timer);
   commitSession();
@@ -1529,6 +1569,7 @@ function bindReader() {
   const reader = $('#reader');
   const flow = $('#flow');
   flow.addEventListener('scroll', onFlowScroll, { passive: true });
+  flow.addEventListener('pointerdown', () => flowFollower.cancel(), { passive: true });
   $('#r-back').onclick = () => { pause({ animate: false }); saveProgress(true); stopSound(); R.narration?.dispose(); R.bookView?.destroy(); R = null; showLibrary(); };
   $('#chapter-btn').onclick = () => showToc('chapters');
   $('#r-toc').onclick = () => showToc('chapters');
@@ -1935,23 +1976,35 @@ function showSettings(startPage = null) {
   };
   const redrawPage = () => {
     const top = body.scrollTop;
-    body.innerHTML = SETTINGS.find(([n]) => n === currentPage)[1].map(control).join('');
+    body.innerHTML = pageBody(currentPage);
     body.scrollTop = top;
   };
   const all = SETTINGS.flatMap(([, list]) => list);
   const fontName = k => FONTS[k]?.[0] || '';
-  const SUMMARY = {
-    Colors: () => `${THEMES[S.theme]?.name || 'Custom'} theme`,
-    'RSVP word': () => `${fontName(S.wordFont)}, ${S.wordSize} pt`,
-    'Scrolling text': () => `${fontName(S.textFont)}, ${S.textSize} pt`,
-    Speed: () => `${S.countdown} s countdown, ${S.wpm} WPM for new books`,
-    Pacing: () => (S.smartPacing ? 'Natural pauses on' : 'Natural pauses off'),
-    'Ambient sound': () => soundLabel(S.sound),
-    'Reading goal': () => `${S.dailyGoal} min a day`,
-    Controls: () => 'Press Play to start; tap to pause',
-    'Library and data': () => 'Backup, restore, and storage',
+  const section = name => SETTINGS.find(([n]) => n === name)[1];
+  const basics = ['wordFont', 'wordSize', 'contextWords', 'contextCount'];
+  const advanced = (title, controls) => `<details class="settings-advanced"><summary>${title}</summary>${controls.map(control).join('')}</details>`;
+  const pageBody = name => {
+    if (name === 'Appearance') return `<p class="settings-intro">Make the page comfortable to read.</p>`
+      + [...section('Colors'), ...section('Scrolling text').slice(0, 2)].map(control).join('')
+      + advanced('Spacing and alignment', section('Scrolling text').slice(2));
+    if (name === 'RSVP') return `<p class="settings-intro">One word at a time. Only Play starts a session.</p>`
+      + [...section('Speed').filter(c => ['wpm', 'countdown'].includes(c.k)), ...section('RSVP word').filter(c => basics.includes(c.k))].map(control).join('')
+      + advanced('Word appearance and focus', section('RSVP word').filter(c => !basics.includes(c.k)))
+      + advanced('Timing and gestures', [...section('Speed').filter(c => !['wpm', 'countdown'].includes(c.k)), ...section('Pacing')]);
+    if (name === 'Audio') return `<p class="settings-intro">Background sound mixes with your audiobook. Adjust its volume here; narration speed is in the book’s audiobook menu.</p>`
+      + section('Ambient sound').map(c => control(c.k === 'volume' ? { ...c, label: 'Background volume' } : c)).join('');
+    if (name === 'Reading goal') return section(name).map(control).join('');
+    return '';
   };
-  const PREVIEW = { Colors: 'word', 'RSVP word': 'word', 'Scrolling text': 'text' };
+  const SUMMARY = {
+    Appearance: () => `${THEMES[S.theme]?.name || 'Custom'} theme · ${fontName(S.textFont)}, ${S.textSize} pt`,
+    RSVP: () => `${S.wpm} WPM · surrounding words ${S.contextWords ? 'on' : 'off'}`,
+    Audio: () => `Background sound · ${soundLabel(S.sound)}`,
+    'Reading goal': () => `${S.dailyGoal} min a day`,
+    'Library and data': () => 'App updates, backups, and storage',
+  };
+  const PREVIEW = { Appearance: 'text', RSVP: 'word' };
   const dataPage = () => `
     <button class="menu-btn" data-a="app-update">Check for app updates<small>Load the latest reader and keep your place</small></button>
     <button class="menu-btn" data-a="backup">Save a backup<small>Includes your books, progress, bookmarks, stats, and settings</small></button>
@@ -1963,7 +2016,7 @@ function showSettings(startPage = null) {
     <div class="menu-btn" id="storage-info"><span>Storage</span><small>Checking</small></div>
     <button class="menu-btn" data-a="reset">Reset settings to defaults</button>
     <button class="menu-btn danger" data-a="clear-stats">Clear reading stats</button>`;
-  const pageNames = [...SETTINGS.map(([name]) => name), 'Library and data'];
+  const pageNames = ['Appearance', 'RSVP', 'Audio', 'Reading goal', 'Library and data'];
   let previewedSound = false;
   const sheet = openSheet('Settings', `<div id="set-preview"></div><div class="sheet-body" id="set-body"></div>`, {
     tall: true,
@@ -2013,15 +2066,16 @@ function showSettings(startPage = null) {
     if (!name) {
       body.innerHTML = pageNames.map(n => `<button class="set-nav" data-page="${esc(n)}"><span><b>${esc(n)}</b><small>${esc(SUMMARY[n]())}</small></span>${icon('back')}</button>`).join('');
     } else if (name === 'Library and data') {
-      body.innerHTML = dataPage();
+      body.innerHTML = dataPage() + advanced('App behavior', section('Controls'));
       storageInfo($('#storage-info', sheet));
     } else {
-      body.innerHTML = SETTINGS.find(([n]) => n === name)[1].map(control).join('');
+      body.innerHTML = pageBody(name);
     }
     preview();
     slide(direction);
   };
-  showPage(startPage, 'none');
+  const aliases = { Colors: 'Appearance', 'Scrolling text': 'Appearance', 'RSVP word': 'RSVP', Speed: 'RSVP', Pacing: 'RSVP', 'Ambient sound': 'Audio', Controls: 'Library and data' };
+  showPage(aliases[startPage] || startPage, 'none');
 
   sheet.addEventListener('input', e => {
     const t = e.target;
@@ -2526,9 +2580,9 @@ document.addEventListener('visibilitychange', () => {
       R.narration.setBackground(true);
       R.narration.update(true);
       releaseWake();
-      stopSound();
     } else if (R.state !== 'paused') pause({ animate: false });
   } else if (narrating()) {
+    if (R.state !== 'paused' && S.sound !== 'off') playSound(S.sound, S.volume);
     R.narration.setBackground(false);
     if (R.book.audioMode === 'page') showFlowAt(R.pos, true);
     else renderWord(R.words[R.pos]);

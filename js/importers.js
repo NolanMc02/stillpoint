@@ -3,6 +3,7 @@
 import { normalizeText } from './engine.js';
 import { analyzePages, buildBlocks } from './pdfclean.js';
 import { cleanBook, defaultBookOptions } from './bookclean.js';
+import { makeCover } from './covers.js';
 
 export class ImportError extends Error {}
 
@@ -297,6 +298,47 @@ const resolvePath = (base, rel) => {
   try { return decodeURIComponent(path); } catch { return path; }
 };
 
+async function packageCover(zip, opfPath, opf) {
+  try {
+    const items = [...opf.getElementsByTagNameNS('*', 'item')];
+    const legacy = [...opf.getElementsByTagNameNS('*', 'meta')].find(m => m.getAttribute('name') === 'cover')?.getAttribute('content');
+    let item = items.find(m => /\bcover-image\b/.test(m.getAttribute('properties') || '')) || items.find(m => m.getAttribute('id') === legacy);
+    let href = item && resolvePath(opfPath, item.getAttribute('href'));
+    let type = item?.getAttribute('media-type');
+    if (!href) {
+      const guide = [...opf.getElementsByTagNameNS('*', 'reference')].find(m => m.getAttribute('type') === 'cover');
+      const pagePath = guide && resolvePath(opfPath, guide.getAttribute('href')).split('#')[0];
+      const page = pagePath && zipFile(zip, pagePath);
+      if (page) {
+        if (/\.(?:jpe?g|png|webp|gif)$/i.test(pagePath)) href = pagePath;
+        else {
+          const doc = parseMarkup(await page.async('string'));
+          const image = doc.querySelector('img, image');
+          const src = image?.getAttribute('src') || image?.getAttribute('href') || image?.getAttribute('xlink:href');
+          if (src) href = resolvePath(pagePath, src);
+        }
+      }
+    }
+    if (!href) href = Object.keys(zip.files).find(p => /(?:^|\/)cover\.(?:jpe?g|png|webp)$/i.test(p));
+    const entry = href && zipFile(zip, href);
+    if (!entry || entry._data?.uncompressedSize > 16 * 1024 * 1024) return null;
+    const data = await entry.async('uint8array');
+    if (!type) type = /\.svg$/i.test(href) ? 'image/svg+xml' : /\.png$/i.test(href) ? 'image/png' : 'image/jpeg';
+    return await makeCover(new Blob([data], { type }));
+  } catch { return null; } // Missing or damaged artwork must not prevent reading.
+}
+
+export async function readEpubCover(file) {
+  const zip = await loadZip(await file.arrayBuffer());
+  const entry = zip.file('META-INF/container.xml');
+  if (!entry) throw new ImportError('Choose the original EPUB or an image file.');
+  const container = new DOMParser().parseFromString(await entry.async('string'), 'application/xml');
+  const opfPath = container.getElementsByTagNameNS('*', 'rootfile')[0]?.getAttribute('full-path');
+  const opf = opfPath && zipFile(zip, opfPath);
+  if (!opf) return null;
+  return packageCover(zip, opfPath, new DOMParser().parseFromString(await opf.async('string'), 'application/xml'));
+}
+
 async function epubToBook(buffer, fallback) {
   const zip = await loadZip(buffer);
   const encryption = zip.file('META-INF/encryption.xml');
@@ -404,7 +446,8 @@ async function epubToBook(buffer, fallback) {
     if (/^\*\*\*\s*(?:START|END) OF (?:THE|THIS) PROJECT GUTENBERG EBOOK/i.test(b.t)) b.roles = [...new Set([...b.roles, 'boilerplate'])];
     b.sid = `epub:${i}`; b.order = i;
   });
-  return cleanBook({ title: meta('title') || fallback, author: meta('creator'), format: 'epub', blocks, chapters }, defaultBookOptions());
+  const cover = await packageCover(zip, opfPath, opf);
+  return cleanBook({ title: meta('title') || fallback, author: meta('creator'), format: 'epub', blocks, chapters, cover }, defaultBookOptions());
 }
 
 async function docxToBook(buffer, fallback) {

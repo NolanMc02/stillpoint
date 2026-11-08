@@ -56,6 +56,10 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 .book-progress i { position: absolute; inset: 0 auto 0 0; background: var(--hi); border-radius: 2px; }
 .book-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--dim); font-size: 14px; margin-top: 7px; font-variant-numeric: tabular-nums; }
 .book-row .icon-btn { margin: -8px -10px 0 0; color: var(--dim); }
+.book-open { display: flex; align-items: center; gap: 16px; }
+.book-cover { width: 64px; height: 96px; flex: none; display: grid; place-items: center; overflow: hidden; border-radius: 5px; background: var(--panel); box-shadow: 0 2px 7px #0003; color: var(--dim); font: 32px var(--serif); }
+.book-cover img { width: 100%; height: 100%; object-fit: cover; }
+.book-details { display: block; flex: 1; min-width: 0; }
 .empty { min-height: 72%; display: flex; flex-direction: column; justify-content: center; gap: 16px; align-items: flex-start; }
 .empty h2 { font: 500 34px/1.15 var(--serif); margin: 0; max-width: 12em; }
 .empty p { color: var(--dim); margin: 0; max-width: 28em; }
@@ -123,6 +127,14 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 #rail { position: absolute; left: 0; right: 0; top: var(--word-y, 42%); height: 0; }
 #word { position: absolute; inset: 0; font-family: var(--word-font); font-size: var(--word-size); font-weight: var(--word-weight); line-height: 1; white-space: pre; height: 0; }
 #word span { position: absolute; top: 0; transform: translateY(-50%); line-height: 1.25; }
+.rsvp-context { position: absolute; top: 0; transform: translateY(-50%); font: var(--word-weight) calc(var(--word-size) * .52)/1.3 var(--word-font); color: var(--ink); opacity: .38; white-space: nowrap; overflow: hidden; pointer-events: none; }
+.rsvp-context[hidden] { display: none; }
+#context-before { left: 10px; text-align: right; mask-image: linear-gradient(to right, transparent, #000 25%); }
+#context-before:not([hidden]) { display: flex; justify-content: flex-end; }
+#context-after { right: 10px; mask-image: linear-gradient(to left, transparent, #000 25%); }
+.settings-advanced { margin: 14px 0; padding: 0 14px; background: var(--panel); border-radius: 12px; }
+.settings-advanced summary { padding: 16px 0; font-size: 15px; cursor: pointer; }
+.settings-intro { margin: 8px 0 18px; color: var(--dim); font-size: 14px; }
 #w-pivot { color: var(--hi); }
 [data-pivot=bold] #w-pivot { font-weight: 800; }
 [data-pivot=underline] #w-pivot { text-decoration: underline; text-decoration-thickness: .07em; text-underline-offset: .12em; }

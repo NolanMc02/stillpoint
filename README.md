@@ -4,6 +4,14 @@ A private reader for iPhone with RSVP, reflowable pages, continuous scrolling, a
 
 Use the **book icon** in the reader to switch between Book and RSVP views. In Book view, **Aa** offers pages or continuous scrolling, fonts, text size, boldness, spacing, margins, alignment, themes, page dimming, and progress display. Swipe or tap page edges to turn; tap the center to show or hide controls. Reading position is shared with RSVP and narration. Native text selection, highlights, and notes are disabled. Only Play starts an RSVP session.
 
+Settings are grouped into **Appearance**, **RSVP**, **Audio**, **Reading goal**, and **Library and data**. Detailed word, focus, timing, and gesture controls live in expandable sections. **RSVP → Surrounding words** optionally shows one to three faint words on each side of the current flash without moving its focus point; it is off by default.
+
+Choose background sound under **Settings → Audio** or the reader's ambient-sound button, then press Play. Narration and background sound start together, and hiding the page no longer explicitly stops the background sound. Narration keeps its native media element and lock-screen controls. Actual iPhone screen-off mixing still needs a physical-device check; desktop tests simulate visibility changes. Pausing stops background sound when it is set to play only while reading.
+
+Listen-and-follow keeps the highlighted word in a comfortable vertical band, gently advancing a few lines when needed rather than recentering every word. Book pages keep their position until the next page is needed. Explicit seeks still jump to the selected place, and reduced-motion preferences are respected.
+
+New EPUB imports include a small local cover thumbnail (EPUB 3 cover-image, EPUB 2 cover metadata, and guide cover pages are supported). Updated Studio exports carry that cover in the combined book ZIP. For a book already in the library, choose **⋯ → Add cover** and select the original EPUB or an image; this preserves its text, audio, and reading position. Old imports cannot recover artwork that was never stored. Covers are included in ordinary book backups.
+
 **Audiobook Studio** is a local desktop interface: choose an EPUB, review its text and chapters, preview a narrator, generate with progress and pause/resume, and download one ZIP containing the book, audio, and word timings. On the phone, use **Add a book → Choose files** to import that ZIP. Open `Open Audiobook Studio.command` on a configured Mac or `Open Audiobook Studio.cmd` on a configured Windows PC. For an NVIDIA Windows PC, run `Setup Audiobook Studio (Windows).cmd` once first. A prominent generation card shows narration progress, elapsed time, an estimated remaining narration time, and the actual device. One-time setup, the CLI alternative, and current limits are documented in [tools/audiobook/README.md](tools/audiobook/README.md).
 
 Open the site in Safari, tap Share, then Add to Home Screen.
@@ -24,6 +32,7 @@ Additional browser regression checks (install `playwright` and `jszip`):
 
 ```sh
 node tests/cleanup.cjs
+node tests/reader-upgrades.cjs
 node tests/audiobook-zip.cjs
 node tests/large-audiobook.cjs
 node tests/examples.cjs /path/to/folder-containing-example-epubs-and-example-pdfs
