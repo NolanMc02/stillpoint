@@ -209,6 +209,7 @@ export class BookReader {
   }
   bindGestures() {
     let gesture;
+    this.viewport.addEventListener('touchstart', event => { if (event.touches.length > 1) { clearTimeout(gesture?.timer); gesture = null; } }, { passive: true });
     this.viewport.addEventListener('wheel', () => this.browse(), { passive: true });
     this.viewport.addEventListener('pointerdown', event => {
       this.follower.cancel(); this.suppressUntil = 0;

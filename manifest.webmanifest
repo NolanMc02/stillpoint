@@ -1,7 +1,7 @@
 {
   "name": "Stillpoint",
   "short_name": "Stillpoint",
-  "description": "A private speed reader that shows one word at a time.",
+  "description": "Read, listen, or focus one word at a time. Your library stays on this device.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

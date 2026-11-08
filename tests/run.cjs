@@ -161,7 +161,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   ok('chapter jump lands on the chapter', jump.pos === jump.want && jump.title === 'Chapter 3: Part of the River', jump.title);
 
   // Bookmark and search
-  await page.tap('#r-mark');
+  await page.tap('#r-more'); await page.tap('#r-mark');
   await sleep(100);
   await page.tap('#r-toc'); await page.waitForSelector('.tabs');
   await page.tap('[data-t=bookmarks]');

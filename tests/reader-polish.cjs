@@ -30,7 +30,7 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
       if (!fs.existsSync(file)) return route.fulfill({ status: 404 });
       return route.fulfill({ body: fs.readFileSync(file), contentType: ({ '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' })[path.extname(file)] || 'application/octet-stream' });
     });
-    const shot = async name => { if (process.env.SHOTS) { fs.mkdirSync(process.env.SHOTS, { recursive: true }); await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }); } };
+    const shot = async name => { if (process.env.SHOTS) { fs.mkdirSync(process.env.SHOTS, { recursive: true }); await page.waitForTimeout(320); await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }); } };
     await page.goto('http://localhost:8123/'); await page.waitForSelector('#empty-add');
     await page.evaluate(async () => {
       const db = await import('/js/db.js'), { buildIndex } = await import('/js/engine.js'), { createNarrationJob } = await import('/js/narration.js');
@@ -71,10 +71,10 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     check('scrolling Listen shows percentage once and hides the unused page-navigation row', layout.percentages.length === 1 && layout.nav);
     check('compact controls use less than 175 px including a simulated 34 px home-indicator inset', layout.footer < 175);
     check('iPhone header is fixed, opaque and free of CSS filters or transforms', layout.header.position === 'fixed' && layout.header.background === 'rgb(0, 0, 0)' && layout.header.filter === 'none' && layout.header.backdrop === 'none' && layout.header.transform === 'none');
-    check('compact iPhone header has no extra spacer and keeps text below tappable buttons', layout.clearance.trim() === '0px' && layout.headerHeight <= 120 && layout.belowHeader && layout.modeTappable);
+    check('compact iPhone header has no extra spacer and keeps text below tappable buttons', layout.clearance.trim() === '0px' && layout.headerHeight <= 128 && layout.belowHeader && layout.modeTappable);
     check('the full play button clears the bottom safe-area shield', layout.playVisible && layout.playBottom <= 852 - 34);
     await shot('compact-listen');
-    await page.click('#r-context'); await page.waitForSelector('#story-prompt');
+    await page.click('#r-more'); await page.click('#r-context'); await page.waitForSelector('#story-prompt');
     check('the explanation panel also stays below the iPhone header-shield region', await page.locator('.sheet').evaluate(el => el.getBoundingClientRect().top >= 59));
     await page.waitForTimeout(220); await shot('story-choices');
     check('both Story Help choices remain fully visible and tappable in the scrolling sheet', await page.locator('[data-story-kind]').evaluateAll(buttons => buttons.length === 2 && buttons.every(el => { const r = el.getBoundingClientRect(); return r.height >= 45.9 && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === el; })));
@@ -99,7 +99,7 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     await page.click('[data-close]');
     check('closing the explanation does not resume narration', await page.evaluate(() => __stillpoint.R.state === 'paused' && __stillpoint.R.narration.audio.paused));
     await page.click('#play'); await page.waitForFunction(() => __stillpoint.R.state === 'playing');
-    await page.click('#r-context');
+    await page.click('#r-more'); await page.click('#r-context');
     check('opening explanation during playback pauses native audio', await page.evaluate(() => __stillpoint.R.state === 'paused' && __stillpoint.R.narration.audio.paused));
     const frozen = await page.locator('#story-prompt').inputValue(); await page.waitForTimeout(250);
     check('prompt position stays fixed while the panel is open', frozen === await page.locator('#story-prompt').inputValue());
@@ -150,11 +150,13 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     check('older Listen books reopen in the current reader with their original audio and position', await page.evaluate(() => __stillpoint.R.book.readingView === 'book' && __stillpoint.R.book.readerMode === 'listen' && __stillpoint.R.pos === 90 && !!__stillpoint.R.narration && document.querySelector('#r-settings').textContent === 'Aa'));
     check('one listening-options button replaces duplicate speed and Sleep buttons', bottom.count === 1 && bottom.sameRow && await page.locator('#audio-options').textContent() === '1×');
     await page.setViewportSize({ width: 320, height: 700 }); await page.waitForTimeout(180);
+    await page.click('#audio-options'); await page.selectOption('#audio-rate', '1.75'); await page.selectOption('#sleep-choice', '5'); await page.click('[data-close]');
     check('the single transport row fits a narrow phone without overlap or clipped buttons', await page.evaluate(() => {
       const row = document.querySelector('#controls').getBoundingClientRect();
       const buttons = [...document.querySelectorAll('#controls button')].filter(el => el.getClientRects().length).map(el => el.getBoundingClientRect());
       return buttons.every((r, i) => r.left >= row.left - 1 && r.right <= row.right + 1 && (!i || r.left >= buttons[i - 1].right - 1));
     }));
+    await page.click('#audio-options'); await page.selectOption('#audio-rate', '1'); await page.selectOption('#sleep-choice', 'off'); await page.click('[data-close]');
     await page.setViewportSize({ width: 393, height: 852 }); await page.waitForTimeout(180);
     await page.click('#audio-options'); await page.selectOption('#sleep-choice', '5'); await page.click('[data-close]');
     check('the single listening button also indicates an active sleep timer', (await page.locator('#audio-options').getAttribute('aria-label')).includes('sleep timer active'));
@@ -211,7 +213,7 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
 
     await page.click('[data-close]'); await page.waitForTimeout(200);
     const normalHeight = await page.locator('.book-viewport').evaluate(el => el.getBoundingClientRect().height);
-    await page.click('#r-fullscreen'); await page.waitForTimeout(180);
+    await page.click('#r-more'); await page.click('#r-fullscreen'); await page.waitForTimeout(180);
     check('explicit fullscreen hides app controls and gives the space to the book', await page.evaluate(({ pos, height }) => {
       const v = document.querySelector('.book-viewport').getBoundingClientRect(); return __stillpoint.R.fullscreen && __stillpoint.R.pos === pos && v.height > height + 100 && getComputedStyle(document.querySelector('#top-bar')).opacity === '0' && getComputedStyle(document.querySelector('#bottom-bar')).pointerEvents === 'none';
     }, { pos: saved, height: normalHeight }));
@@ -244,6 +246,90 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
       return Math.abs(footer.height - before.footerHeight) < 1 && Math.abs(view.bottom - before.viewBottom - 20) < 1 && Math.abs(footer.top - view.bottom - 10) < 1 && __stillpoint.R.pos === before.pos;
     }, loweredLayout));
     await page.click('[data-close]'); await page.waitForTimeout(150); await shot('lowered-player-text');
+    // Negative top clearance uses the same live/saved behavior as the bottom.
+    await page.click('#r-settings'); await page.click('[data-appearance="layout"]'); await page.click('#screen-clearance');
+    await page.locator('#clearanceBottom').fill('0'); await page.locator('#clearanceTop').fill('-20'); await page.waitForTimeout(250);
+    await page.click('[data-close]'); await page.waitForTimeout(150);
+    check('negative top clearance raises the header without hiding its tap target', await page.evaluate(before => {
+      const button = document.querySelector('#r-mode'), r = button.getBoundingClientRect();
+      return Math.abs(r.top - before.top + 20) < 1 && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest('button') === button && __stillpoint.S.clearanceTop === -20;
+    }, clearanceBaseline));
+    await page.reload(); await page.waitForSelector('.book-viewport');
+    check('negative top clearance persists across reopening', await page.evaluate(() => __stillpoint.S.clearanceTop === -20 && getComputedStyle(document.documentElement).getPropertyValue('--header-clearance') === '-20px'));
+    const guards = await page.evaluate(() => {
+      const send = (type, props = {}) => { const event = new Event(type, { bubbles: true, cancelable: true }); for (const [key, value] of Object.entries(props)) Object.defineProperty(event, key, { value }); document.dispatchEvent(event); return event.defaultPrevented; };
+      return { pinch: send('gesturestart'), multi: send('touchmove', { touches: [{}, {}] }), single: send('touchmove', { touches: [{}] }), wheel: send('wheel', { ctrlKey: true }), normalWheel: send('wheel', { ctrlKey: false }), key: send('keydown', { key: '+', ctrlKey: true }), meta: document.querySelector('meta[name=viewport]').content };
+    });
+    check('zoom gestures are blocked while normal one-finger scrolling is left alone', guards.pinch && guards.multi && guards.wheel && guards.key && !guards.single && !guards.normalWheel && guards.meta.includes('user-scalable=no'));
+    if (engine === chromium) {
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('Input.synthesizePinchGesture', { x: 180, y: 300, scaleFactor: 1.5, relativeSpeed: 800, gestureSourceType: 'touch' });
+      check('a native Chromium pinch gesture leaves page scale unchanged', await page.evaluate(() => Math.abs(visualViewport.scale - 1) < .01));
+      await cdp.detach();
+    }
+    check('native scrollbars are hidden without disabling scroll containers', await page.locator('.book-viewport').evaluate(el => getComputedStyle(el).scrollbarWidth === 'none' && getComputedStyle(el).overflowY === 'hidden'));
+    await page.click('#r-more');
+    check('secondary actions live in one labeled reader menu', await page.locator('.reader-tools .tool-action').count() === 6 && await page.locator('#r-context').isVisible() && await page.locator('#r-fullscreen').isVisible() && await page.locator('#r-sound').isVisible());
+    const bookmarkedAt = await page.evaluate(() => __stillpoint.R.pos);
+    await page.click('#r-mark');
+    check('bookmarking from Reader tools preserves the current word', await page.evaluate(pos => __stillpoint.R.pos === pos && __stillpoint.R.book.bookmarks.some(mark => mark.word === pos), bookmarkedAt));
+    await page.click('#r-more'); await page.click('#r-mark');
+    check('Reader tools can remove the same bookmark', await page.evaluate(pos => !__stillpoint.R.book.bookmarks.some(mark => mark.word === pos), bookmarkedAt));
+    await page.click('#r-more'); await page.click('#r-sound'); await page.waitForSelector('#vol');
+    check('background sound stays reachable through Reader tools', await page.locator('.sheet').getAttribute('aria-label') === 'Ambient sound');
+    await page.click('[data-close]');
+    // Original fixture covers and contrasting book states for library navigation.
+    await page.evaluate(async () => {
+      const db = await import('/js/db.js'), r = __stillpoint.R;
+      const cover = (title, color) => {
+        const canvas = document.createElement('canvas'); canvas.width = 240; canvas.height = 360; const ctx = canvas.getContext('2d');
+        ctx.fillStyle = color; ctx.fillRect(0, 0, 240, 360); ctx.strokeStyle = '#e7dbbb'; ctx.lineWidth = 1; ctx.strokeRect(18, 18, 204, 324);
+        ctx.fillStyle = '#f5eddc'; ctx.font = '13px Georgia'; ctx.fillText('STILLPOINT EDITIONS', 28, 53); ctx.font = '30px Georgia';
+        title.split('|').forEach((line, i) => ctx.fillText(line, 28, 140 + i * 38)); ctx.font = '12px Georgia'; ctx.fillText('ORIGINAL SAMPLE', 28, 310);
+        return canvas.toDataURL('image/jpeg', .85);
+      };
+      const current = await db.get('books', r.book.id); current.cover = cover('The Quiet|River', '#2e4640'); r.book.cover = current.cover; await db.put('books', current);
+      for (const [id, title, author, color, done] of [ ['atlas', 'The Garden Atlas', 'Original field notes', '#735340', false], ['mornings', 'Quiet Mornings: Notes on Paying Attention', 'Original essays', '#526471', false], ['finished', 'Last Light', 'Original short fiction', '#634756', true] ]) {
+        await db.saveBook({ id, title, author, pos: done ? 999 : 0, wordCount: 1000, addedAt: 1, readerMode: 'read', readingView: 'book', bookLayout: 'pages', chapters: [{ title: 'Chapter One', block: 0 }], bookmarks: [], finishedAt: done ? 100 : null, audioReady: false, cover: cover(title.replace(':', '|').slice(0, 28), color) }, { id, blocks: r.blocks.map((b, i) => ({ ...b, sid: `${id}:${i}` })) });
+      }
+      await db.put('kv', { ...__stillpoint.S, clearanceTop: 0, clearanceBottom: 0, theme: 'paper', textSize: 20, textMargin: 24, textFont: 'iowan', textAlign: 'left' }, 'settings');
+    });
+    await page.click('#r-back'); await page.waitForSelector('#lib-list'); await page.reload(); await page.waitForSelector('#lib-list');
+    await shot('library-initial');
+    check('library shows covers, a resume card, and a clearly labeled add-book action', await page.locator('.book-row').count() === 4 && await page.locator('.book-cover img').count() === 5 && await page.locator('#go-add').innerText() === 'Add book' && await page.locator('.continue-card').isVisible());
+    await page.click('[data-lib-filter="finished"]');
+    check('Finished filter shows only completed books', await page.locator('.book-row').count() === 1 && await page.locator('.book-title').textContent() === 'Last Light');
+    await page.click('[data-lib-filter="unfinished"]');
+    check('Unfinished filter includes new and partially read books', await page.locator('.book-row').count() === 3);
+    await page.locator('#lib-search').fill('no-matching-book'); await page.click('#library-clear');
+    check('empty search has a working show-all recovery', await page.locator('.book-row').count() === 4 && await page.locator('#lib-search').inputValue() === '');
+    await page.locator('#lib-search').fill('garden');
+    check('search and library filters work together', await page.locator('.book-row').count() === 1 && await page.locator('.book-title').textContent() === 'The Garden Atlas');
+    await page.locator('#lib-search').fill('');
+    await page.locator('#lib-search').blur(); await shot('library-paper');
+    await page.click('#go-add');
+    check('import has a clear primary file choice and keeps supported formats accessible', await page.locator('.import-primary').isVisible() && await page.locator('#file-pick').count() === 1 && await page.locator('#paste-go').isVisible());
+    await shot('import-book'); await page.click('[data-close]');
+    await page.click('#library-backup');
+    check('backups are directly reachable and maintenance is collapsed by default', await page.locator('[data-a="backup"]').isVisible() && !(await page.locator('[data-a="reset"]').isVisible()) && !(await page.locator('#s-backupNarration').isVisible()));
+    await shot('settings-data'); await page.click('[data-close]');
+    await page.click('#go-stats'); await page.waitForSelector('#stats-back'); await shot('activity');
+    await page.click('#stats-back'); await page.click('.continue-card'); await page.waitForSelector('.book-viewport');
+    check('quiet listening keeps only six direct player controls and centers Play', await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('#controls button')].filter(el => el.getClientRects().length), play = document.querySelector('#play').getBoundingClientRect(), row = document.querySelector('#controls').getBoundingClientRect();
+      return buttons.length === 6 && Math.abs(play.x + play.width / 2 - (row.x + row.width / 2)) < 1;
+    }));
+    check('reader header keeps its safe-area placement after library navigation', await page.evaluate(() => { const r = document.querySelector('#top-bar').getBoundingClientRect(); return Math.abs(r.top) < 1 && r.height >= 119 && r.height <= 128 && visualViewport.scale === 1; }));
+    await shot('reader-paper'); await page.click('#r-more'); await shot('reader-tools'); await page.click('[data-close]');
+    await page.click('#r-mode'); await page.click('[data-mode="read"]'); await page.click('[data-close]');
+    check('Read mode uses page controls rather than an audio-looking player', await page.locator('#book-navigation').isVisible() && !(await page.locator('#play').isVisible()) && !(await page.locator('#audio-options').isVisible()));
+    await shot('read-paper');
+    await page.click('#r-settings'); await shot('appearance-paper');
+    await page.click('[data-appearance="themes"]'); await page.click('#custom-theme-settings'); await page.click('[data-theme-pick="custom"]');
+    check('custom theme editing remains available from appearance', await page.locator('.custom-rows').isVisible());
+    await page.click('[data-theme-pick="paper"]'); await page.click('[data-close]');
+    await page.click('#r-back'); await page.setViewportSize({ width: 1280, height: 900 }); await page.waitForTimeout(200); await shot('library-desktop');
+    check('desktop library remains in a readable centered column', await page.locator('#lib-body').evaluate(el => el.getBoundingClientRect().width <= 880 && el.getBoundingClientRect().left >= 190));
     check('no application errors', errors.length === 0);
     console.log(`${count} reader polish checks passed`);
   } finally { if (browser) await browser.close(); fs.rmSync(temporary, { recursive: true, force: true }); }

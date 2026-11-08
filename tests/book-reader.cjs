@@ -51,6 +51,9 @@ const check = (label, value) => { assert.ok(value, label); console.log(`PASS ${l
     await page.keyboard.press('ArrowRight');
     check('keyboard page turning keeps silent reading paused', await page.evaluate(old => __stillpoint.R.bookView.page === old.page + 1 && __stillpoint.R.state === 'paused', before));
     await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('ArrowDown');
+    check('up and down arrows turn book pages without changing RSVP speed', await page.evaluate(old => __stillpoint.R.bookView.page === old.page + 1 && __stillpoint.R.wpm === 300, before));
+    await page.keyboard.press('ArrowUp');
     const frame = await page.locator('.book-viewport').boundingBox();
     await page.locator('.book-viewport').dispatchEvent('pointerdown', { pointerId: 6, pointerType: 'touch', clientX: frame.x + frame.width - 10, clientY: frame.y + 200 });
     await page.locator('.book-viewport').dispatchEvent('pointerup', { pointerId: 6, pointerType: 'touch', clientX: frame.x + 15, clientY: frame.y + 200 });
@@ -72,7 +75,10 @@ const check = (label, value) => { assert.ok(value, label); console.log(`PASS ${l
     await page.click('[data-close]'); await page.waitForTimeout(350);
     check('continuous scrolling layout can be selected', await page.evaluate(() => __stillpoint.R.bookView.layout === 'scroll' && __stillpoint.R.book.bookLayout === 'scroll'));
     const scrollStart = await page.evaluate(() => __stillpoint.R.pos);
+    await page.locator('.book-viewport').dispatchEvent('pointerdown', { pointerId: 15, pointerType: 'touch', clientX: 180, clientY: 350 });
+    await page.locator('.book-viewport').dispatchEvent('pointermove', { pointerId: 15, pointerType: 'touch', clientX: 180, clientY: 250 });
     await page.locator('.book-viewport').evaluate(el => { el.scrollTop += el.clientHeight; });
+    await page.locator('.book-viewport').dispatchEvent('pointerup', { pointerId: 15, pointerType: 'touch', clientX: 180, clientY: 250 });
     await page.waitForFunction(pos => __stillpoint.R.pos > pos, scrollStart);
     check('manual scrolling updates the shared reading position', await page.evaluate(pos => __stillpoint.R.pos > pos, scrollStart));
     const saved = await page.evaluate(() => __stillpoint.R.pos);

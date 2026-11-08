@@ -114,7 +114,7 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     await page.click('#audio-retry'); await page.waitForSelector('#playback-error[hidden]', { state: 'attached' });
     check('reloading saved audio waits for an explicit Play', await page.evaluate(() => __stillpoint.R.narration.audio.paused && __stillpoint.R.state === 'paused'));
     await page.click('#r-back'); await page.waitForSelector('.continue-card');
-    check('Continue listening uses accurate audio remaining time', (await page.locator('.continue-card').innerText()).includes('Continue listening') && (await page.locator('.book-meta').innerText()).includes('Audio ·')); await shot('continue-listening');
+    check('Continue listening uses accurate audio remaining time', (await page.locator('.continue-card').innerText()).includes('Continue listening') && (await page.locator('.book-meta').innerText()).includes('Listen') && /[0-9]+:[0-9]{2} left/.test(await page.locator('.book-meta').innerText())); await shot('continue-listening');
     const stored = await page.evaluate(async () => (await (await import('/js/db.js')).get('books', 'iteration')).pos);
     await page.click('.continue-card'); await page.waitForSelector('#listen-view:not([hidden])');
     check('reopening restores mode, speed, follow choice and word without autoplay', await page.evaluate(pos => __stillpoint.R.book.readerMode === 'listen' && __stillpoint.R.book.audioRate === 2 && __stillpoint.R.book.listenFollow === false && __stillpoint.R.pos === pos && __stillpoint.R.narration.audio.paused, stored));
