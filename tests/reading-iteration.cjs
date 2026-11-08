@@ -75,7 +75,7 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     check('back skip preserves the paused position across clips', await page.evaluate(() => Math.abs(__stillpoint.R.narration.positionSeconds() - 2) < .1 && __stillpoint.R.narration.audio.paused));
     await page.click('#r-rew'); await page.waitForFunction(() => __stillpoint.R.narration.positionSeconds() < .1);
     await page.click('#audio-speed'); await page.selectOption('#audio-rate', '2'); await page.click('[data-close]');
-    check('speed updates chapter/book remaining time', (await page.locator('#audio-times').innerText()).includes('0:06 in chapter') && (await page.locator('#audio-times').innerText()).includes('0:18 in book'));
+    check('speed updates chapter/book remaining time', (await page.locator('#audio-times').getAttribute('aria-label')).includes('0:06 remaining in chapter') && (await page.locator('#audio-times').getAttribute('aria-label')).includes('0:18 remaining in book'));
     await page.click('#play'); await page.waitForFunction(() => __stillpoint.R.narration.audio.currentTime > .2);
     check('native narration and background sound run together', await page.evaluate(async () => !__stillpoint.R.narration.audio.paused && (await import('/js/sounds.js')).soundState().playing === 'brown'));
     const mediaSession = await page.evaluate(() => typeof __media.pause === 'function');

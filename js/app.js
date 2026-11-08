@@ -3,6 +3,7 @@ import { refreshInstalledApp } from './updates.js';
 import { BookReader } from './book-reader.js';
 import { MODE_LABELS, savedMode, selectMode, summarizeAudio } from './reading-state.js';
 import { SleepTimer } from './sleep-timer.js';
+import { buildStoryPrompt } from './story-context.js';
 import { FollowScroll } from './follow-scroll.js';
 import { makeCover, validCover } from './covers.js';
 import { openAudiobookZip } from './audiobook-zip.js';
@@ -33,6 +34,7 @@ const ICON = {
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>', list: '<path d="M4 7h16M4 12h16M4 17h10"/>',
   mark: '<path d="M7 4h10v16l-5-4-5 4z"/>', sound: '<path d="M4 10v4h3l5 4V6L7 10zM16 9a4 4 0 010 6M18.5 6.5a8 8 0 010 11"/>',
+  explain: '<path d="M5 4h14a2 2 0 012 2v10a2 2 0 01-2 2h-7l-5 3v-3H5a2 2 0 01-2-2V6a2 2 0 012-2z"/><path d="M9.5 8a2.5 2.5 0 015 0c0 2-2.5 2-2.5 4"/><path d="M12 15h.01"/>',
   book: '<path d="M12 5v15M3 4c3-1 6-1 9 1 3-2 6-2 9-1v15c-3-1-6-1-9 1-3-2-6-2-9-1z"/>',
   back10: '<path d="M4 12a8 8 0 108-8H8"/><path d="M11 1L8 4l3 3"/>',
   minus: '<path d="M5 12h14"/>', trash: '<path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/>',
@@ -784,7 +786,9 @@ function updateListeningControls() {
   if ($('#audio-sleep')) $('#audio-sleep').textContent = timer?.kind === 'duration' ? `Sleep ${audioClock(timer.remainingMs / 1000)}` : timer?.kind === 'chapter' ? 'Sleep · chapter' : 'Sleep';
   if ($('#audio-times')) {
     const position = R.narration.positionSeconds(), rate = R.book.audioRate || 1;
-    $('#audio-times').textContent = `${audioClock(Math.max(0, chapterEndSeconds() - position) / rate)} in chapter · ${audioClock(Math.max(0, R.narration.durationSeconds() - position) / rate)} in book`;
+    const chapter = audioClock(Math.max(0, chapterEndSeconds() - position) / rate), book = audioClock(Math.max(0, R.narration.durationSeconds() - position) / rate);
+    $('#audio-times').textContent = `Ch ${chapter} · Book ${book}`;
+    $('#audio-times').setAttribute('aria-label', `${chapter} remaining in chapter; ${book} remaining in book`);
   }
 }
 function showListeningOptions() {
@@ -1131,10 +1135,11 @@ function renderReader() {
       <div id="scrub-wrap"><div id="scrub-track"><div id="scrub-fill"></div></div>
         <input id="scrub" type="range" min="0" max="${Math.max(0, R.words.length - 1)}" step="1" value="${R.pos}" aria-label="Position in book"></div>
       <div id="read-meta"><span id="m-pct"></span><span id="m-left"></span></div>
-      <div id="audio-toolbar" hidden><span id="audio-times"></span><button id="audio-speed" aria-label="Playback speed">1×</button><button id="audio-sleep" aria-label="Sleep timer">Sleep</button></div>
+      <div id="audio-toolbar" hidden><span id="audio-progress"></span><span id="audio-times"></span><button id="audio-speed" aria-label="Playback speed">1×</button><button id="audio-sleep" aria-label="Sleep timer">Sleep</button></div>
       <div id="controls">
         <div class="side">
           <button class="icon-btn" id="r-toc" aria-label="Chapters, bookmarks, and search">${icon('list')}</button>
+          <button class="icon-btn" id="r-context" aria-label="What’s happening here?" title="What’s happening here?">${icon('explain')}</button>
           <button class="audio-skip" id="r-rew" aria-label="Back 15 seconds">${icon('back10')}<small>15s</small></button>
         </div>
         <button id="play" aria-label="Play">${icon('play')}</button>
@@ -1161,7 +1166,7 @@ function renderReader() {
   $('#listen-view').hidden = !listenOnly();
   if ((readerMode() === 'listen' || (readerMode() === 'rsvp' && R.book.rsvpAudio)) && (R.playbackError || R.narrationError)) { $('#playback-error').hidden = false; $('#playback-error-message').textContent = R.playbackError || R.narrationError; }
   if (bookMode()) {
-    $('#book-view').hidden = false; $('#book-navigation').hidden = false;
+    $('#book-view').hidden = false; $('#book-navigation').hidden = (R.book.bookLayout || 'pages') !== 'pages';
     $('#r-settings').textContent = 'Aa'; $('#r-settings').setAttribute('aria-label', 'Reading appearance');
     R.bookView = new BookReader($('#book-view'), R, {
       onPosition: pos => {
@@ -1172,6 +1177,7 @@ function renderReader() {
       onWordMenu: pos => { pause({ animate: false }); showWordMenu(pos); },
       onToggleChrome: () => $('#reader').classList.toggle('book-chrome-hidden'),
       onPage: info => {
+        $('#book-navigation').hidden = info.layout !== 'pages';
         const el = $('#book-page-info'); if (el) el.textContent = info.label;
         const folio = $('#book-view .book-page-count');
         if (folio) {
@@ -1184,8 +1190,9 @@ function renderReader() {
     R.bookView.setCurrent(R.pos, narrating());
   }
   const owner = R, root = $('#reader'), footer = $('#bottom-bar');
-  const fitControls = () => { if (R === owner && root.isConnected) root.style.setProperty('--reader-footer', `${Math.ceil(footer.getBoundingClientRect().height)}px`); };
-  fitControls(); R.chromeResize = new ResizeObserver(fitControls); R.chromeResize.observe(footer);
+  const header = $('#top-bar');
+  const fitControls = () => { if (R === owner && root.isConnected) { root.style.setProperty('--reader-footer', `${Math.ceil(footer.getBoundingClientRect().height)}px`); root.style.setProperty('--reader-header', `${Math.ceil(header.getBoundingClientRect().height)}px`); } };
+  fitControls(); R.chromeResize = new ResizeObserver(fitControls); R.chromeResize.observe(footer); R.chromeResize.observe(header);
   updateWpm();
   updateMeta();
   renderWord(R.words[R.pos] || '');
@@ -1373,6 +1380,8 @@ function updateMeta() {
   const left = formatDuration(narrating() ? R.narration.remainingMs(pos) : estimateMs(R.words.length - pos, R.wpm, S.smartPacing));
   if (pctEl) {
     pctEl.textContent = `${Math.round(ratio * 100)}%`;
+    if ($('#audio-progress')) $('#audio-progress').textContent = pctEl.textContent;
+    scrub?.setAttribute('aria-valuetext', `${Math.round(ratio * 100)}% through the book`);
     $('#m-left').textContent = `${left} left`;
   }
   const lp = $('#live-progress');
@@ -1700,6 +1709,7 @@ function bindReader() {
   $('#r-back').onclick = async () => { pause({ animate: false }); await saveProgress(true); stopSound(); R.sleepTimer?.dispose(); R.chromeResize?.disconnect(); R.narration?.dispose(); R.bookView?.destroy(); R = null; await showLibrary(); };
   $('#chapter-btn').onclick = () => showToc('chapters');
   $('#r-toc').onclick = () => showToc('chapters');
+  $('#r-context').onclick = () => showStoryContext();
   $('#r-mark').onclick = addBookmark;
   $('#r-mode').onclick = showReaderModes;
   $('#r-settings').onclick = () => bookMode() ? showBookAppearance() : showSettings();
@@ -1864,17 +1874,45 @@ function resumeAfterRewind() {
   }
 }
 
+function showStoryContext(position = null) {
+  if (!R) return;
+  pause({ animate: false });
+  if (position === null && readerMode() === 'read' && R.bookView?.layout === 'scroll') {
+    clearTimeout(R.bookView.scrollTimer); R.pos = R.bookView.firstVisible(); updateMeta(); saveProgress(true);
+  }
+  const cutoff = position === null ? R.pos : clamp(position, 0, R.words.length - 1);
+  const prompt = buildStoryPrompt({ book: R.book, words: R.words, glue: R.glue, chapterStarts: R.chapterStarts, position: cutoff });
+  const sheet = openSheet('What’s happening here?', `<div class="sheet-body stack">
+    <p class="muted">Copy this prompt into your AI chat for a short explanation. It contains your book, chapter, reading cutoff, and preceding text. Nothing is sent automatically.</p>
+    <button class="primary" id="story-copy">Copy prompt</button><p id="story-copy-status" class="muted" role="status">Only text up to the selected word is included. AI can still make mistakes or include spoilers despite these instructions.</p>
+    <label for="story-prompt">Prompt to copy</label><textarea id="story-prompt" readonly spellcheck="false" aria-label="Story explanation prompt"></textarea>
+    <p class="muted">For a more precise cutoff while reading, hold a word and choose “Explain up to this word.” Closing this panel keeps playback paused.</p></div>`, { tall: true });
+  const field = $('#story-prompt', sheet); field.value = prompt;
+  $('#story-copy', sheet).onclick = async () => {
+    let copied = false;
+    try { if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(prompt); copied = true; } } catch {}
+    if (!copied) {
+      field.focus(); field.select(); field.setSelectionRange(0, field.value.length);
+      try { copied = document.execCommand('copy'); } catch {}
+    }
+    $('#story-copy-status', sheet).textContent = copied ? 'Prompt copied. Paste it into your AI chat.' : 'Automatic copying was blocked. Select the prompt below and use Copy.';
+    if (copied) toast('Prompt copied');
+  };
+}
+
 /* Word menu, bookmarks */
 function showWordMenu(i) {
   const excerpt = R.words.slice(Math.max(0, i - 3), i + 6).join(' ');
   const sheet = openSheet('This word', `<div class="sheet-body">
     <p class="muted">${esc(excerpt)}</p>
     <button class="menu-btn" data-a="start">Read from here</button>
+    <button class="menu-btn" data-a="explain">Explain up to this word</button>
     <button class="menu-btn" data-a="mark">Add a bookmark here</button></div>`);
   sheet.onclick = e => {
     const action = e.target.closest('[data-a]')?.dataset.a;
     if (action === 'start') { closeSheet(); pause({ animate: false }); seek(i); }
     if (action === 'mark') { closeSheet(); addBookmark(i); }
+    if (action === 'explain') showStoryContext(i);
   };
 }
 function addBookmark(at) {
@@ -2737,6 +2775,7 @@ addEventListener('pagehide', () => { if (R) { commitSession(); saveProgress(true
 addEventListener('resize', () => { if (R) renderWord(R.lastText); });
 
 async function boot() {
+  document.documentElement.dataset.applePwa = looksLikeIOS() && isStandalone() ? 'true' : 'false';
   try {
     await db.openDB();
   } catch (error) {

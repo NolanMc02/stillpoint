@@ -8,6 +8,10 @@ The library has a prominent Continue card with the last-used mode, chapter, cove
 
 Listen and narrated RSVP provide **Back 15 seconds**, **Forward 15 seconds**, playback speed, and chapter/book time remaining. The **Sleep** button offers 5–60 minutes or the end of the current chapter. Duration timers count wall-clock time, including pauses. Timers stop narration and background sound, reset when leaving the book, and are checked through native media events as well as a clock. Actual iPhone locked-screen timing still needs device acceptance testing. Playback failures offer Reload audio, Audiobook options, and Read instead; reloading stays paused.
 
+The reader footer shows one progress percentage, a compact chapter/book clock, and transport controls. Scrolling views omit page-navigation buttons, and the separate chapter/progress folio appears only while controls are hidden. Installed iPhone apps use a fixed opaque header with extra clearance below the status-bar area; actual iOS scroll-edge rendering still needs an on-device check.
+
+Use the **question-mark speech bubble → Copy prompt** for “What’s happening here?” The prompt identifies the book, chapter, word cutoff and edition progress, and includes up to 400 preceding words. It never includes later words in the same paragraph or future chapter titles. For a precise cutoff, hold a word and choose **Explain up to this word**. Playback pauses, and the prompt remains fixed while open. Paste it into your AI chat; no AI service is called automatically. The prompt asks for 3–5 short bullets without future events, sentence completion or foreshadowing, but an external AI's response cannot be guaranteed spoiler-free. If clipboard access is blocked, the prompt can be selected and copied manually.
+
 Settings are grouped into **Appearance**, **RSVP**, **Audio**, **Reading goal**, and **Library and data**. Detailed word, focus, timing, and gesture controls live in expandable sections. **RSVP → Surrounding words** optionally shows one to three faint words on each side of the current flash without moving its focus point; it is off by default.
 
 Choose background sound under **Settings → Audio** or the reader's ambient-sound button, then press Play. Narration and background sound start together, and hiding the page no longer explicitly stops the background sound. Narration keeps its native media element and lock-screen controls. Actual iPhone screen-off mixing still needs a physical-device check; desktop tests simulate visibility changes. Pausing stops background sound when it is set to play only while reading.
@@ -38,6 +42,7 @@ Additional browser regression checks (install `playwright` and `jszip`):
 node tests/cleanup.cjs
 node tests/reader-upgrades.cjs
 node tests/reading-iteration.cjs
+node tests/reader-polish.cjs
 node tests/audiobook-zip.cjs
 node tests/large-audiobook.cjs
 node tests/examples.cjs /path/to/folder-containing-example-epubs-and-example-pdfs
