@@ -219,6 +219,16 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     await page.locator('.book-viewport').evaluate(el => { const r = el.getBoundingClientRect(); el.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 17, clientX: r.x + r.width * .5, clientY: r.y + r.height * .4 })); el.dispatchEvent(new PointerEvent('pointerup', { pointerId: 17, clientX: r.x + r.width * .5, clientY: r.y + r.height * .4 })); });
     await page.waitForTimeout(180);
     check('center tap exits fullscreen and restores controls without autoplay', await page.evaluate(pos => !__stillpoint.R.fullscreen && __stillpoint.R.pos === pos && getComputedStyle(document.querySelector('#bottom-bar')).opacity === '1' && __stillpoint.R.narration.audio.paused, saved));
+    const clearanceBaseline = await page.evaluate(() => ({ top: document.querySelector('#r-mode').getBoundingClientRect().top, bottom: document.querySelector('#play').getBoundingClientRect().bottom, pos: __stillpoint.R.pos }));
+    await page.click('#r-settings'); await page.click('[data-appearance="layout"]'); await page.click('#screen-clearance');
+    await page.locator('#clearanceTop').fill('40'); await page.locator('#clearanceBottom').fill('60'); await page.waitForTimeout(250);
+    check('clearance sliders move the actual header down and player up without moving the reading position', await page.evaluate(before => Math.abs(document.querySelector('#r-mode').getBoundingClientRect().top - before.top - 40) < 1 && Math.abs(document.querySelector('#play').getBoundingClientRect().bottom - before.bottom + 60) < 1 && __stillpoint.R.pos === before.pos, clearanceBaseline));
+    check('clearance settings show the current pixel values', await page.locator('#clearanceTop-value').textContent() === '40 px' && await page.locator('#clearanceBottom-value').textContent() === '60 px');
+    await shot('clearance-sliders');
+    await page.reload(); await page.waitForSelector('.book-viewport');
+    check('top and bottom clearance survive reopening', await page.evaluate(() => __stillpoint.S.clearanceTop === 40 && __stillpoint.S.clearanceBottom === 60 && getComputedStyle(document.documentElement).getPropertyValue('--bottom-clearance') === '60px'));
+    await page.click('#r-settings'); await page.click('[data-appearance="layout"]'); await page.click('#screen-clearance'); await page.click('#clearance-reset'); await page.waitForTimeout(100);
+    check('Reset clearance restores both defaults without resetting appearance or the book', await page.evaluate(pos => __stillpoint.S.clearanceTop === 0 && __stillpoint.S.clearanceBottom === 0 && __stillpoint.S.textMargin === 50 && __stillpoint.R.pos === pos, clearanceBaseline.pos));
     check('no application errors', errors.length === 0);
     console.log(`${count} reader polish checks passed`);
   } finally { if (browser) await browser.close(); fs.rmSync(temporary, { recursive: true, force: true }); }

@@ -84,6 +84,7 @@ const DEFAULTS = {
   guides: true, guideDist: 100, wordsPerFlash: 1, liveProgress: true, liveText: false, chapterCall: true,
   contextWords: false, contextCount: 2,
   textFont: 'iowan', textSize: 19, textLead: 1.6, textMargin: 22, textAlign: 'left',
+  clearanceTop: 0, clearanceBottom: 0,
   textWeight: 400, bookIndent: true, bookAnimation: true, bookDim: 0, bookProgress: 'page',
   wpm: 300, wpmStep: 25, wpmMin: 50, wpmMax: 1500, perBookWpm: true, countdown: 3, ramp: 5, rewind: 10, resumeBack: 0,
   smartPacing: true, commaPause: 1.4, sentencePause: 1.9, paragraphPause: 2.2, longWordPause: 1, chapterPause: 1500,
@@ -168,6 +169,8 @@ function applySettings() {
   const c = themeColors();
   const vars = {
     '--bg': c.bg, '--ink': c.ink, '--hi': c.hi,
+    '--header-clearance': `${clamp(Number(S.clearanceTop) || 0, 0, 160)}px`,
+    '--bottom-clearance': `${clamp(Number(S.clearanceBottom) || 0, 0, 160)}px`,
     '--word-font': FONTS[S.wordFont]?.[1], '--word-size': `${S.wordSize}px`, '--word-weight': S.wordWeight,
     '--word-y': `${S.wordY}%`, '--pivot-x': `${S.pivotX}%`,
     '--guide-dist': S.guideDist / 100, '--guide-shift': S.guides ? (S.guideDist / 100 - 1) * 0.86 : 0,
@@ -851,6 +854,28 @@ function setReaderFullscreen(hidden) {
   $('#r-fullscreen')?.setAttribute('aria-pressed', String(hidden));
 }
 
+function showClearanceSettings() {
+  if (R) pause({ animate: false });
+  const sheet = openSheet('Screen clearance', `<div class="sheet-body">
+    <p class="muted">Top moves the header down. Bottom moves the player up. Watch the reader behind this panel as you adjust.</p>
+    ${[['clearanceTop', 'Top clearance'], ['clearanceBottom', 'Bottom clearance']].map(([key, label]) => `<div class="set-row"><div class="set-line"><label for="${key}">${label}</label><output id="${key}-value" for="${key}">${S[key] || 0} px</output></div><input id="${key}" type="range" min="0" max="160" step="2" value="${S[key] || 0}" aria-label="${label}"></div>`).join('')}
+    <button class="secondary" id="clearance-reset">Reset clearance</button>
+    </div>`);
+  sheet.parentElement.classList.add('clearance-scrim');
+  const update = () => {
+    for (const key of ['clearanceTop', 'clearanceBottom']) {
+      S[key] = clamp(Number($(`#${key}`, sheet).value) || 0, 0, 160);
+      $(`#${key}-value`, sheet).textContent = `${S[key]} px`;
+    }
+    applySettings(); saveSettings();
+  };
+  sheet.addEventListener('input', update);
+  sheet.addEventListener('change', update);
+  $('#clearance-reset', sheet).onclick = () => {
+    $('#clearanceTop', sheet).value = 0; $('#clearanceBottom', sheet).value = 0; update();
+  };
+}
+
 function showBookAppearance() {
   if (!R?.bookView) return;
   pause({ animate: false });
@@ -894,6 +919,7 @@ function showBookAppearance() {
       ${field('Line spacing', select('textLead', [[1.4, 'Compact'], [1.65, 'Comfortable'], [1.9, 'Spacious']]))}
       ${field('Side margins', `<input type="range" aria-label="Book margins" data-book-setting="textMargin" min="8" max="56" step="2" value="${S.textMargin}">`)}
       ${field('Alignment', select('textAlign', [['left', 'Left aligned'], ['justify', 'Justified']]))}
+      <button class="menu-btn" id="screen-clearance">Screen clearance<small>Adjust the top header and bottom player positions</small></button>
       ${field('Reading progress', select('bookProgress', [['page', 'Page in section'], ['percent', 'Book percentage'], ['time', 'Estimated time left'], ['none', 'Hidden']]))}
       <label class="book-check"><input type="checkbox" data-book-setting="bookIndent" ${S.bookIndent ? 'checked' : ''}>Indent paragraphs</label>
       <label class="book-check"><input type="checkbox" data-book-setting="bookAnimation" ${S.bookAnimation ? 'checked' : ''}>Page-turn animation</label>`;
@@ -919,6 +945,7 @@ function showBookAppearance() {
   sheet.addEventListener('input', updateAppearance);
   sheet.addEventListener('change', updateAppearance);
   sheet.addEventListener('click', event => {
+    if (event.target.closest('#screen-clearance')) { showClearanceSettings(); return; }
     const tab = event.target.closest('[data-appearance]');
     if (tab) { draw(tab.dataset.appearance); return; }
     const layout = event.target.closest('[data-book-layout]');
@@ -2265,7 +2292,8 @@ function showSettings(startPage = null) {
   };
   const PREVIEW = { Appearance: 'text', RSVP: 'word' };
   const dataPage = () => `
-    <button class="menu-btn" data-a="app-update">Check for app updates<small>Reader 20 · Load the latest reader and keep your place</small></button>
+    <button class="menu-btn" data-a="app-update">Check for app updates<small>Reader 21 · Load the latest reader and keep your place</small></button>
+    <button class="menu-btn" data-a="screen-clearance">Screen clearance<small>Adjust the top header and bottom player positions</small></button>
     <button class="menu-btn" data-a="backup">Save a backup<small>Includes your books, progress, bookmarks, stats, and settings</small><small id="last-backup">Save a copy outside this app</small></button>
     <label class="menu-btn" for="restore" style="cursor:pointer">Restore from a backup<small>Preview its contents and choose what to restore</small></label>
     <input id="restore" type="file" accept=".zip,application/zip" style="position:absolute;opacity:0;width:1px;height:1px">
@@ -2436,6 +2464,7 @@ function showSettings(startPage = null) {
       toast('Built-in tracks restored');
       return;
     }
+    if (action === 'screen-clearance') showClearanceSettings();
     if (action === 'backup') exportBackup().catch(error => toast(error.message || 'The backup could not be saved.', 7000));
     if (action === 'app-update') {
       const button = e.target.closest('[data-a="app-update"]');
