@@ -1,4 +1,5 @@
 import * as db from './db.js';
+import { createBackup, inspectBackup, restoreBackup } from './backups.js';
 import { refreshInstalledApp } from './updates.js';
 import { BookReader } from './book-reader.js';
 import { MODE_LABELS, savedMode, selectMode, summarizeAudio } from './reading-state.js';
@@ -2196,8 +2197,8 @@ function showSettings(startPage = null) {
   const PREVIEW = { Appearance: 'text', RSVP: 'word' };
   const dataPage = () => `
     <button class="menu-btn" data-a="app-update">Check for app updates<small>Load the latest reader and keep your place</small></button>
-    <button class="menu-btn" data-a="backup">Save a backup<small>Includes your books, progress, bookmarks, stats, and settings</small></button>
-    <label class="menu-btn" for="restore" style="cursor:pointer">Restore from a backup<small>Adds its books and replaces your settings</small></label>
+    <button class="menu-btn" data-a="backup">Save a backup<small>Includes your books, progress, bookmarks, stats, and settings</small><small id="last-backup">Save a copy outside this app</small></button>
+    <label class="menu-btn" for="restore" style="cursor:pointer">Restore from a backup<small>Preview its contents and choose what to restore</small></label>
     <input id="restore" type="file" accept=".zip,application/zip" style="position:absolute;opacity:0;width:1px;height:1px">
     <div class="set-row"><div class="set-line"><label for="s-backupTracks">Include your audio files in backups<small class="set-help">${tracks.length ? `Your files take about ${trackMb(tracks.reduce((n, t) => n + t.size, 0))}, which makes backups larger.` : 'Applies to audio files you add.'}</small></label>
       <input class="switch" type="checkbox" role="switch" id="s-backupTracks" data-k="backupTracks" ${S.backupTracks ? 'checked' : ''}></div></div>
@@ -2257,6 +2258,7 @@ function showSettings(startPage = null) {
     } else if (name === 'Library and data') {
       body.innerHTML = dataPage() + advanced('App behavior', section('Controls'));
       storageInfo($('#storage-info', sheet));
+      db.get('kv', 'lastBackup').then(last => { const el = $('#last-backup', sheet); if (last && el) el.textContent = `Last sent to device: ${new Date(last.at).toLocaleString()}`; }).catch(() => {});
     } else {
       body.innerHTML = pageBody(name);
     }
@@ -2401,113 +2403,97 @@ async function storageInfo(el) {
 }
 
 /* ---------- Backup ---------- */
+function backupProgress(title) {
+  const controller = new AbortController();
+  const sheet = openSheet(title, `<div class="sheet-body"><p id="backup-status" role="status" aria-live="polite">Preparing…</p>
+    <progress id="backup-progress" style="width:100%" aria-label="Backup progress"></progress>
+    <p class="muted">Keep Stillpoint open until this finishes. Closing this panel cancels the operation.</p>
+    <div id="backup-actions"></div></div>`, { onClose: () => controller.abort() });
+  return { sheet, signal: controller.signal, progress: (label, n, total) => {
+    $('#backup-status', sheet).textContent = label + (total ? ` · ${Math.floor(n / total * 100)}%` : '');
+    const bar = $('#backup-progress', sheet);
+    if (total) { bar.max = total; bar.value = n; } else bar.removeAttribute('value');
+  } };
+}
+function backupError(error, sheet) {
+  console.error(error);
+  if (!sheet.isConnected || error.name === 'AbortError') return;
+  $('#backup-status', sheet).textContent = error.name === 'QuotaExceededError'
+    ? 'There is not enough free space. Free some device storage and try again.'
+    : error.message || 'The backup could not be read. Try a fresh copy from Files.';
+  $('#backup-progress', sheet)?.remove();
+}
 async function exportBackup() {
-  toast('Preparing your backup', 8000);
-  const zip = new window.JSZip();
-  const [books, contents, sessions] = await Promise.all([db.getAll('books'), db.getAll('contents'), db.getAll('sessions')]);
-  const kept = S.backupTracks ? tracks : [];
-  const narrations = S.backupNarration ? await db.getAll('narrations') : [];
-  for (const record of narrations) {
-    zip.file(`narrations/${record.id}.json`, JSON.stringify(record.manifest));
-    for (const clip of record.manifest.clips) {
-      const audio = await db.readNarrationAudio(record.id, clip.file);
-      if (!audio) throw new Error('An audiobook clip is missing. Import it again before backing up.');
-      zip.file(`narrations/${record.id}/${clip.file}`, audio);
-    }
-  }
-  zip.file('stillpoint.json', JSON.stringify({ app: 'stillpoint', version: 1, createdAt: Date.now(), settings: S, books, sessions, tracks: kept, narrationIds: narrations.map(n => n.id) }));
-  contents.forEach(c => zip.file(`books/${c.id}.json`, JSON.stringify(c)));
-  for (const track of kept) {
-    const record = await db.get('trackdata', track.id);
-    // Audio is already compressed, so it is stored as it is.
-    if (record) zip.file(`tracks/${track.id}.bin`, record.data, { compression: 'STORE' });
-  }
-  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-  const name = `stillpoint-backup-${new Date().toISOString().slice(0, 10)}.zip`;
-  const file = new File([blob], name, { type: 'application/zip' });
-  if (navigator.canShare?.({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file], title: 'Stillpoint backup' });
-      toast('Backup ready');
-      return;
-    } catch (error) {
-      if (error.name === 'AbortError') { toast('Backup canceled'); return; }
-    }
-  }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(file);
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
-  toast('Backup saved');
+  if (R) pause({ animate: false });
+  const operation = backupProgress('Save a backup'), { sheet, signal, progress } = operation;
+  try {
+    const blob = await createBackup(S, { signal, progress });
+    signal.throwIfAborted();
+    const name = `stillpoint-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+    const file = new File([blob], name, { type: 'application/zip' });
+    $('#backup-status', sheet).textContent = `Backup ready · ${trackMb(file.size)}`;
+    $('#backup-actions', sheet).innerHTML = '<button class="primary" id="backup-save">Save backup file</button><p class="muted">Save it to Files, iCloud Drive, or your computer. A backup kept only inside Stillpoint cannot protect against losing app storage.</p>';
+    $('#backup-save', sheet).onclick = async () => {
+      try {
+        let shared = false;
+        if (navigator.canShare?.({ files: [file] })) {
+          try { await navigator.share({ files: [file], title: 'Stillpoint backup' }); shared = true; }
+          catch (error) { if (error.name === 'AbortError') return; }
+        }
+        if (!shared) {
+          const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name;
+          document.body.append(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+        }
+        await db.put('kv', { at: Date.now(), size: file.size }, 'lastBackup');
+        $('#backup-status', sheet).textContent = 'Backup sent to your device. Make sure you save the file.';
+      } catch (error) { if (error.name !== 'AbortError') backupError(error, sheet); }
+    };
+  } catch (error) { backupError(error, sheet); }
 }
 async function importBackup(file) {
   if (R) pause({ animate: false });
+  const operation = backupProgress('Check backup'), { sheet, signal, progress } = operation;
   try {
-    const zip = await window.JSZip.loadAsync(await file.arrayBuffer());
-    const manifestFile = zip.file('stillpoint.json');
-    if (!manifestFile) throw new Error('not a backup');
-    const data = JSON.parse(await manifestFile.async('string'));
-    if (data.app !== 'stillpoint') throw new Error('not a backup');
-    let restored = 0;
-    for (const book of data.books || []) {
-      const contentFile = zip.file(`books/${book.id}.json`);
-      if (!contentFile) continue;
-      const content = JSON.parse(await contentFile.async('string'));
-      if (!Array.isArray(content.blocks) || typeof book.id !== 'string') continue;
-      await db.saveBook(book, content);
-      restored++;
-    }
-    let skippedNarrations = 0;
-    for (const id of data.narrationIds || []) {
-      if (typeof id !== 'string' || !/^[\w-]+$/.test(id)) continue;
+    const plan = await inspectBackup(file, { signal }); signal.throwIfAborted();
+    const current = new Set((await db.getAll('books')).map(b => b.id));
+    const duplicates = plan.books.filter(b => current.has(b.book.id)).length;
+    const date = new Date(plan.data.createdAt);
+    $('#backup-status', sheet).textContent = `${plan.books.length} books · ${plan.data.narrationIds?.length || 0} audiobooks · ${plan.data.tracks?.length || 0} background audio files`;
+    $('#backup-progress', sheet).remove();
+    $('#backup-actions', sheet).innerHTML = `<p class="muted">${Number.isFinite(date.getTime()) ? `Created ${esc(date.toLocaleString())}. ` : ''}${duplicates} books already on this device. By default, their text, audio, progress, and bookmarks stay as they are.</p>
+      <div class="set-line"><label for="restore-replace">Replace existing books and their saved places</label><input type="checkbox" id="restore-replace"></div>
+      <p class="set-help">Replacement uses the backup’s copy, including its bookmarks. If audio was excluded, the replacement is text only. Other books stay on this device.</p>
+      <div class="set-line"><label for="restore-settings">Restore settings too</label><input type="checkbox" id="restore-settings"></div>
+      <p class="muted">Reading history is merged without duplicates. Each book is saved together with its complete audio. If interrupted, completed books remain; you can safely retry.</p>
+      <button class="primary" id="restore-start">Restore backup</button>`;
+    $('#restore-start', sheet).onclick = async () => {
+      const replace = $('#restore-replace', sheet).checked, settings = $('#restore-settings', sheet).checked;
+      $('#backup-actions', sheet).innerHTML = '<p class="muted">Checking audio and restoring one book at a time. Closing cancels after the current small chunk; completed books remain.</p>';
+      $('#backup-status', sheet).insertAdjacentHTML('afterend', '<progress id="backup-progress" style="width:100%" aria-label="Restore progress"></progress>');
+      const returnBookId = R?.book.id;
       try {
-        const entry = zip.file(`narrations/${id}.json`);
-        if (!entry) throw new Error('Missing audiobook');
-        const book = await db.get('books', id), content = await db.get('contents', id);
-        if (!book || !content) throw new Error('Missing book');
-        const manifest = validateManifest(JSON.parse(await entry.async('string')), await createNarrationJob(book, content));
-        const audio = [];
-        for (const clip of manifest.clips) {
-          const file = zip.file(`narrations/${id}/${clip.file}`);
-          if (!file) throw new Error('Missing audio clip');
-          audio.push({ file: clip.file, data: await file.async('blob') });
+        // A stale open reader must not autosave over a restored book on pagehide.
+        if (R) {
+          await saveProgress(true);
+          R.sleepTimer?.dispose(); R.chromeResize?.disconnect(); R.narration?.dispose(); R.bookView?.destroy();
+          stopSound(); R = null;
+          await showLibrary();
         }
-        await db.saveNarration(id, manifest, audio);
-      } catch (error) { console.error(error); skippedNarrations++; }
-    }
-    const existing = new Set((await db.getAll('sessions')).map(s => `${s.bookId}|${s.at}`));
-    for (const session of data.sessions || []) {
-      const { id, ...rest } = session;
-      if (!existing.has(`${rest.bookId}|${rest.at}`)) await db.put('sessions', rest);
-    }
-    let restoredTracks = 0;
-    for (const t of data.tracks || []) {
-      if (typeof t?.id !== 'string' || !/^[\w-]+$/.test(t.id) || tracks.some(x => x.id === t.id)) continue;
-      const audio = zip.file(`tracks/${t.id}.bin`);
-      if (!audio) continue;
-      const track = {
-        id: t.id, name: String(t.name || 'Untitled track').slice(0, 60), size: Number(t.size) || 0, duration: Number(t.duration) || 0,
-        norm: clamp(Number(t.norm) || 1, 0.1, 8), level: clamp(Number(t.level) || 1, 0.25, 2), addedAt: Number(t.addedAt) || Date.now(),
-      };
-      await db.saveTrack(track, await audio.async('arraybuffer'));
-      tracks.push(track);
-      restoredTracks++;
-    }
-    if (data.settings) {
-      S = { ...DEFAULTS, ...data.settings };
-      applySettings();
-      saveSettings();
-    }
-    fixSound();
-    closeSheet();
-    toast(`Restored ${restored} ${restored === 1 ? 'book' : 'books'}${restoredTracks ? ` and ${restoredTracks} ${restoredTracks === 1 ? 'track' : 'tracks'}` : ''}${skippedNarrations ? `. ${skippedNarrations} audiobook(s) could not be restored` : ''}`);
-    if (R) await openBook(R.book.id);
-    else showLibrary();
-  } catch (error) {
-    console.error(error);
-    toast('This file is not a Stillpoint backup.');
-  }
+        const result = await restoreBackup(plan, { replace, signal, progress }); signal.throwIfAborted();
+        if (settings && plan.data.settings && typeof plan.data.settings === 'object') {
+          S = { ...DEFAULTS, ...plan.data.settings }; applySettings(); await db.put('kv', S, 'settings');
+        }
+        closeSheet();
+        toast(`Restored ${result.restored} ${result.restored === 1 ? 'book' : 'books'}${result.skipped ? ` · kept ${result.skipped} existing` : ''}${result.tracks ? ` · ${result.tracks} background audio files` : ''}`, 6000);
+      } catch (error) { backupError(error, sheet); }
+      finally {
+        tracks = await db.getAll('tracks'); fixSound();
+        if (returnBookId && await db.get('books', returnBookId)) await openBook(returnBookId);
+        else await showLibrary();
+      }
+    };
+  } catch (error) { backupError(error, sheet); }
 }
 
 /* ---------- Stats ---------- */

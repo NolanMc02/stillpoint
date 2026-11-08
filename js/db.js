@@ -45,9 +45,10 @@ export const put = (store, value, key) => run(store, 'readwrite', s => (key === 
 export const del = (store, key) => run(store, 'readwrite', s => s.delete(key));
 export const clear = store => run(store, 'readwrite', s => s.clear());
 
-export function saveBook(book, content) {
+export function saveBook(book, content, { clearAudio = false } = {}) {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(['books', 'contents'], 'readwrite');
+    const tx = db.transaction(clearAudio ? ['books', 'contents', 'narrations', 'narrationdata'] : ['books', 'contents'], 'readwrite');
+    if (clearAudio) { tx.objectStore('narrations').delete(book.id); deleteNarrationData(tx, book.id); }
     tx.objectStore('books').put(book);
     tx.objectStore('contents').put(content);
     tx.oncomplete = () => resolve();

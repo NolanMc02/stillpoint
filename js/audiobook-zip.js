@@ -11,7 +11,7 @@ const u64 = (data, offset) => {
 };
 
 async function bytes(file, start, length) {
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(length) || start < 0 || length < 0 || start + length > file.size) bad('This audiobook ZIP is incomplete or damaged. Copy the complete download to your phone and try again.');
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(length) || start < 0 || length < 0 || start + length > file.size) bad('This ZIP is incomplete or damaged. Copy the complete download to your phone and try again.');
   try {
     const result = new Uint8Array(await file.slice(start, start + length).arrayBuffer());
     if (result.length !== length) bad('The selected file could not be read completely.');
@@ -29,8 +29,8 @@ export async function openAudiobookZip(file) {
   for (let i = tail.length - 22; i >= 0; i--) {
     if (end.getUint32(i, true) === 0x06054b50 && i + 22 + end.getUint16(i + 20, true) === tail.length) { eocd = i; break; }
   }
-  if (eocd < 0) bad('This is not a complete ZIP file. Download or copy the audiobook ZIP again; keep it zipped.');
-  if (end.getUint16(eocd + 4, true) || end.getUint16(eocd + 6, true)) bad('Split ZIP files are not supported. Choose the single ZIP downloaded from Studio.');
+  if (eocd < 0) bad('This is not a complete ZIP file. Download or copy the ZIP again; keep it zipped.');
+  if (end.getUint16(eocd + 4, true) || end.getUint16(eocd + 6, true)) bad('Split ZIP files are not supported. Choose a complete, single ZIP file.');
   let count = end.getUint16(eocd + 10, true), size = end.getUint32(eocd + 12, true), offset = end.getUint32(eocd + 16, true);
   if (count === 65535 || size === 0xffffffff || offset === 0xffffffff) {
     const locator = view(await bytes(file, tailStart + eocd - 20, 20));
@@ -39,16 +39,16 @@ export async function openAudiobookZip(file) {
     if (record.getUint32(0, true) !== 0x06064b50 || record.getUint32(16, true) || record.getUint32(20, true)) bad('This ZIP64 directory is damaged.');
     count = u64(record, 32); size = u64(record, 40); offset = u64(record, 48);
   }
-  if (size > MAX_DIRECTORY || count > 8192) bad('This audiobook ZIP has too many entries. Use a continuous M4A export from Studio.');
+  if (size > MAX_DIRECTORY || count > 8192) bad('This ZIP has too many entries. Use a continuous M4A export from Studio.');
   const directory = await bytes(file, offset, size), central = view(directory), entries = new Map();
   let cursor = 0;
   for (let i = 0; i < count; i++) {
-    if (cursor + 46 > size || central.getUint32(cursor, true) !== 0x02014b50) bad('This audiobook ZIP has a damaged directory.');
+    if (cursor + 46 > size || central.getUint32(cursor, true) !== 0x02014b50) bad('This ZIP has a damaged directory.');
     const nameSize = central.getUint16(cursor + 28, true), extraSize = central.getUint16(cursor + 30, true), commentSize = central.getUint16(cursor + 32, true);
     const next = cursor + 46 + nameSize + extraSize + commentSize;
-    if (next > size) bad('This audiobook ZIP has an incomplete directory.');
+    if (next > size) bad('This ZIP has an incomplete directory.');
     const name = new TextDecoder().decode(directory.subarray(cursor + 46, cursor + 46 + nameSize));
-    if (entries.has(name)) bad('This ZIP contains duplicate filenames. Download a fresh audiobook export.');
+    if (entries.has(name)) bad('This ZIP contains duplicate filenames. Choose a fresh copy of the ZIP.');
     const entry = { name, flags: central.getUint16(cursor + 8, true), method: central.getUint16(cursor + 10, true),
       crc: central.getUint32(cursor + 16, true), compressedSize: central.getUint32(cursor + 20, true),
       size: central.getUint32(cursor + 24, true), offset: central.getUint32(cursor + 42, true) };
@@ -75,15 +75,15 @@ export async function openAudiobookZip(file) {
 
   async function range(name) {
     const entry = entries.get(name);
-    if (!entry) bad(`This audiobook is missing ${name}.`);
-    if (entry.flags & 1) bad('Password-protected audiobook ZIPs are not supported.');
+    if (!entry) bad(`This ZIP is missing ${name}.`);
+    if (entry.flags & 1) bad('Password-protected ZIPs are not supported.');
     const header = view(await bytes(file, entry.offset, 30));
-    if (header.getUint32(0, true) !== 0x04034b50 || header.getUint16(8, true) !== entry.method) bad('An audiobook ZIP entry is damaged.');
+    if (header.getUint32(0, true) !== 0x04034b50 || header.getUint16(8, true) !== entry.method) bad('A ZIP entry is damaged.');
     const nameSize = header.getUint16(26, true), extraSize = header.getUint16(28, true);
     const localName = new TextDecoder().decode(await bytes(file, entry.offset + 30, nameSize));
-    if (localName !== name) bad('An audiobook ZIP filename does not match its directory.');
+    if (localName !== name) bad('A ZIP filename does not match its directory.');
     const start = entry.offset + 30 + nameSize + extraSize;
-    if (start + entry.compressedSize > offset) bad('An audiobook ZIP entry is incomplete.');
+    if (start + entry.compressedSize > offset) bad('A ZIP entry is incomplete.');
     return { entry, data: file.slice(start, start + entry.compressedSize) };
   }
 
@@ -110,12 +110,38 @@ export async function openAudiobookZip(file) {
 
   return {
     has: name => entries.has(name),
+    size: name => entries.get(name)?.size,
+    crc: name => entries.get(name)?.crc,
     async json(name) { return JSON.parse(await (await smallEntry(name)).async('string')); },
-    async audio(name) {
+    async audio(name, { signal, progress = () => {} } = {}) {
       const { entry, data } = await range(name);
       if (entry.method === 0) {
         if (entry.size !== entry.compressedSize) bad('The audio entry has invalid sizes.');
         return data;
+      }
+      // Older library backups DEFLATE-compressed the audio too. Inflate those
+      // incrementally; handing the complete entry to JSZip exhausts phone RAM.
+      if (entry.method === 8 && (entry.size > MAX_METADATA || entry.compressedSize > MAX_METADATA)) {
+        let decoder;
+        try { decoder = new DecompressionStream('deflate-raw'); }
+        catch { bad('This older backup has large compressed audio. Restore it in an updated desktop browser, then save a new backup for your phone.'); }
+        const reader = data.stream().pipeThrough(decoder).getReader(), parts = [];
+        let batch = [], batchSize = 0, total = 0;
+        try {
+          for (;;) {
+            signal?.throwIfAborted();
+            const { done, value } = await reader.read();
+            if (done) break;
+            total += value.byteLength;
+            if (total > entry.size) bad('A compressed audio entry has invalid sizes.');
+            batch.push(value); batchSize += value.byteLength;
+            if (batchSize >= 8 * 1024 * 1024) { parts.push(new Blob(batch)); batch = []; batchSize = 0; }
+            progress(total, entry.size);
+          }
+          if (total !== entry.size) bad('A compressed audio entry is incomplete.');
+          if (batch.length) parts.push(new Blob(batch));
+          return new Blob(parts);
+        } finally { await reader.cancel().catch(() => {}); }
       }
       return (await smallEntry(name)).async('blob');
     },

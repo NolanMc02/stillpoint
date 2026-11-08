@@ -21,7 +21,6 @@
   --header-clearance: 0px;
   --safe-l: env(safe-area-inset-left, 0px); --safe-r: env(safe-area-inset-right, 0px);
 }
-:root[data-apple-pwa=true] { --header-clearance: 32px; }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); overscroll-behavior: none; }
 body { font: 16px/1.4 var(--ui); -webkit-text-size-adjust: 100%; overflow: hidden; position: fixed; inset: 0; }
@@ -397,15 +396,10 @@ textarea.field-text { min-height: 180px; resize: vertical; font-family: var(--se
 
 /* Opaque viewport-edge backing for installed iOS apps. iOS can apply a
    native scroll-edge effect; the header also reserves extra clearance below it. */
-/* Keep real, hit-testable backing elements extending past the safe area.
-   The fixed reader header and its content stay below this backing. */
+/* Opaque, hit-testable safe-area backing stops before any reader controls. */
 .edge { position: fixed; left: 0; right: 0; background: var(--bg); z-index: 15; }
-.edge-top { top: 0; height: calc(var(--safe-t) + var(--header-clearance) + 12px); }
-.edge-bottom { bottom: 0; height: calc(var(--safe-b) + 12px); }
-/* WebKit bug 301108: the viewport stops short by the status bar height unless the page is taller. */
-@media (display-mode: standalone) {
-  html { min-height: min(100lvh, calc(100% + env(safe-area-inset-top, 0px))); }
-}
+.edge-top { top: 0; height: var(--safe-t); }
+.edge-bottom { bottom: 0; height: var(--safe-b); }
 
 /* Motion */
 button { transition: transform .24s cubic-bezier(.2,.8,.2,1), opacity .16s ease, background-color .16s ease, color .16s ease, border-color .16s ease; }

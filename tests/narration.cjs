@@ -72,7 +72,8 @@ async function packageFor(job) {
     };
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
-    await page.route('**/*', async route => {
+    await page.route('https://**/*', route => route.abort());
+    await page.route('http://localhost:8123/**', async route => {
       const url = new URL(route.request().url());
       if (url.origin !== 'http://localhost:8123') return route.abort();
       let file = path.resolve(root, `.${decodeURIComponent(url.pathname)}`);
@@ -256,15 +257,26 @@ async function packageFor(job) {
     // Exercise the normal backup path, including audiobook binary data.
     await page.click('#r-settings');
     await page.click('[data-page="Library and data"]');
-    const backupDownload = page.waitForEvent('download');
     await page.click('[data-a="backup"]');
+    await page.waitForSelector('#backup-save');
+    const backupDownload = page.waitForEvent('download');
+    await page.click('#backup-save');
     const backupBytes = fs.readFileSync(await (await backupDownload).path());
     const backup = await JSZip.loadAsync(backupBytes);
     check('backup includes narration metadata and audio', !!backup.file('narrations/narration-test.json') && !!backup.file(`narrations/narration-test/${firstFile}`));
+    const backedUpPlace = JSON.parse(await backup.file('stillpoint.json').async('string')).books.find(b => b.id === 'narration-test').pos;
     await page.evaluate(async () => { const db = await import('/js/db.js'); await db.removeNarration('narration-test'); });
+    await page.evaluate(() => { __stillpoint.R.pos = 0; __stillpoint.R.book.pos = 0; });
+    await page.click('[data-close]');
+    await page.click('#r-settings'); await page.click('[data-page="Library and data"]');
     await page.setInputFiles('#restore', { name: 'backup.zip', mimeType: 'application/zip', buffer: backupBytes });
+    await page.waitForSelector('#restore-start');
+    await page.check('#restore-replace');
+    await page.click('#restore-start');
     await page.waitForFunction(() => document.querySelector('#toast').textContent.startsWith('Restored'));
     check('backup restores playable audio blobs', await page.evaluate(async file => { const db = await import('/js/db.js'); return (await db.get('narrationdata', `narration-test:${file}`)).data.size > 44; }, firstFile));
+    await page.waitForFunction(pos => __stillpoint.R?.pos === pos, backedUpPlace);
+    check('restoring an open book reloads the backup place without stale reader autosaves', await page.evaluate(async pos => { const db = await import('/js/db.js'); dispatchEvent(new Event('pagehide')); await new Promise(r => setTimeout(r, 20)); return (await db.get('books', 'narration-test')).pos === pos; }, backedUpPlace));
     await page.reload();
     await page.waitForSelector('#reader');
     // Simulate a reviewed-text change. Old audio must not be attached.

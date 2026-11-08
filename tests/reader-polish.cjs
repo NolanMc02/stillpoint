@@ -56,12 +56,14 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     const layout = await page.evaluate(() => {
       const rect = selector => document.querySelector(selector).getBoundingClientRect();
       const header = getComputedStyle(document.querySelector('#top-bar'));
-      const mode = rect('#r-mode');
+      const mode = rect('#r-mode'), play = rect('#play');
       const percentages = ['#audio-progress', '#m-pct', '#book-page-info', '.book-page-count'].filter(selector => {
         const el = document.querySelector(selector); return el && el.getClientRects().length && el.textContent === '9%';
       });
       return { footer: rect('#bottom-bar').height, percentages, nav: document.querySelector('#book-navigation').hidden,
         header: { position: header.position, background: header.backgroundColor, filter: header.filter, backdrop: header.backdropFilter || header.webkitBackdropFilter, transform: header.transform },
+        playBottom: play.bottom, playVisible: !!document.elementFromPoint(play.x + play.width / 2, play.bottom - 2)?.closest('#play'),
+        headerHeight: rect('#top-bar').height,
         clearance: getComputedStyle(document.documentElement).getPropertyValue('--header-clearance'),
         belowHeader: rect('.book-viewport').top >= rect('#top-bar').bottom + 10,
         modeTappable: !!document.elementFromPoint(mode.x + mode.width / 2, mode.y + mode.height / 2)?.closest('#r-mode') };
@@ -69,10 +71,11 @@ const check = (label, condition) => { assert.ok(condition, label); count++; cons
     check('scrolling Listen shows percentage once and hides the unused page-navigation row', layout.percentages.length === 1 && layout.nav);
     check('compact controls use less than 175 px including a simulated 34 px home-indicator inset', layout.footer < 175);
     check('iPhone header is fixed, opaque and free of CSS filters or transforms', layout.header.position === 'fixed' && layout.header.background === 'rgb(0, 0, 0)' && layout.header.filter === 'none' && layout.header.backdrop === 'none' && layout.header.transform === 'none');
-    check('iPhone header clearance keeps text below the header without blocking its buttons', layout.clearance.trim() === '32px' && layout.belowHeader && layout.modeTappable);
+    check('compact iPhone header has no extra spacer and keeps text below tappable buttons', layout.clearance.trim() === '0px' && layout.headerHeight <= 120 && layout.belowHeader && layout.modeTappable);
+    check('the full play button clears the bottom safe-area shield', layout.playVisible && layout.playBottom <= 852 - 34);
     await shot('compact-listen');
     await page.click('#r-context'); await page.waitForSelector('#story-prompt');
-    check('the explanation panel also stays below the iPhone header-shield region', await page.locator('.sheet').evaluate(el => el.getBoundingClientRect().top >= 102));
+    check('the explanation panel also stays below the iPhone header-shield region', await page.locator('.sheet').evaluate(el => el.getBoundingClientRect().top >= 59));
     const prompt = await page.locator('#story-prompt').inputValue();
     check('explanation prompt identifies book, chapter and exact cutoff', prompt.includes('The Quiet River') && prompt.includes('Chapter Five: The River') && prompt.includes('word 91 of 1000') && prompt.includes('"STOPWORD"'));
     check('prompt excludes unread words in the same paragraph and future chapter titles', !prompt.includes('FUTURE_SECRET_SENTINEL') && !prompt.includes('FUTURE_CHAPTER_SENTINEL'));
